@@ -250,6 +250,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .face:active { transform: scale(0.96); }
 
 .filters { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; }
+.folder-only {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  align-self: flex-end;
+  font-weight: 700;
+  cursor: pointer;
+}
+.folder-only input { width: 22px; height: 22px; accent-color: var(--accent); }
 .field, .segment { display: flex; flex-direction: column; gap: 6px; min-width: 140px; }
 .segment { min-width: 0; }
 .segment-btn {

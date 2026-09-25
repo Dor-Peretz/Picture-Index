@@ -24,6 +24,7 @@ const els = {
   mergeBtn: document.getElementById("merge-btn"),
   personFilter: document.getElementById("person-filter"),
   folderFilter: document.getElementById("folder-filter"),
+  folderOnly: document.getElementById("folder-only"),
   groupBy: document.getElementById("group-by"),
   radiusField: document.getElementById("radius-field"),
   radius: document.getElementById("radius"),
@@ -167,18 +168,28 @@ function showIndexing(job) {
   }
 }
 
+function selectedRoot() {
+  if (!els.folderOnly.checked) return null;
+  return els.folder.value.trim();
+}
+
 async function loadFolders() {
-  const data = await api("/api/folders");
+  const params = new URLSearchParams();
+  const root = selectedRoot();
+  if (root !== null) params.set("root", root);
+  const data = await api(`/api/folders?${params}`);
   const current = els.folderFilter.value;
   els.folderFilter.innerHTML = `<option value="">All folders</option>${data.folders
     .map((folder) => `<option value="${escapeHtml(folder)}">${escapeHtml(folder)}</option>`)
     .join("")}`;
-  els.folderFilter.value = current;
+  els.folderFilter.value = data.folders.includes(current) ? current : "";
 }
 
 function filterParams() {
   const params = new URLSearchParams();
   if (els.search.value.trim()) params.set("q", els.search.value.trim());
+  const root = selectedRoot();
+  if (root !== null) params.set("root", root);
   if (els.folderFilter.value) params.set("folder", els.folderFilter.value);
   if (els.takenFrom.value) params.set("taken_from", els.takenFrom.value);
   if (els.takenTo.value) params.set("taken_to", els.takenTo.value);
@@ -194,10 +205,14 @@ function queryString() {
 }
 
 async function loadFaces() {
-  const data = await api("/api/faces");
+  const params = new URLSearchParams();
+  const root = selectedRoot();
+  if (root !== null) params.set("root", root);
+  const data = await api(`/api/faces?${params}`);
+  if (state.faceId && !data.faces.some((face) => face.id === state.faceId)) state.faceId = null;
   if (!data.faces.length) {
     state.faceList = [];
-    els.faces.innerHTML = `<span class="muted">Faces appear here after indexing.</span>`;
+    els.faces.innerHTML = `<span class="muted">${els.folderOnly.checked ? "No faces saved in this folder." : "Faces appear here after indexing."}</span>`;
     els.faceActions.classList.add("hidden");
     els.faceMerge.classList.add("hidden");
     fillAssignPeople();
@@ -263,7 +278,12 @@ function highlightPerson(clusterId, scroll) {
   });
 }
 
+let listGeneration = 0;
+let loadingPage = false;
+
 async function search(reset) {
+  if (reset) listGeneration += 1;
+  const generation = listGeneration;
   if (reset) {
     state.offset = 0;
     state.photos = [];
@@ -272,11 +292,13 @@ async function search(reset) {
     state.catalog = null;
   }
   const data = await api(`/api/photos?${queryString()}`);
+  if (generation !== listGeneration) return;
   state.total = data.total;
   state.photos = reset ? data.items : state.photos.concat(data.items);
   state.offset = state.photos.length;
   if (els.groupBy.value === "location") {
     const located = await api(`/api/locations?${filterParams()}`);
+    if (generation !== listGeneration) return;
     state.mapPhotos = located.items;
   }
   renderGrid();
@@ -285,6 +307,31 @@ async function search(reset) {
     state.selectedId = null;
     renderDetail(null);
   }
+  if (reset) loadingPage = false;
+  loadNextPage();
+}
+
+function loadNextPage(force) {
+  if (loadingPage || els.groupBy.value === "location") return;
+  if (!state.total || state.photos.length >= state.total) return;
+  const scroller = document.querySelector(".grid-wrap");
+  if (!scroller) return;
+  const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (!force && distance > 900) return;
+  const before = state.photos.length;
+  const generation = listGeneration;
+  loadingPage = true;
+  els.more.disabled = true;
+  els.more.textContent = "Loading…";
+  search(false)
+    .catch((err) => alert(err.message))
+    .finally(() => {
+      if (generation !== listGeneration) return;
+      loadingPage = false;
+      els.more.disabled = false;
+      els.more.textContent = "Load more";
+      if (state.photos.length > before) loadNextPage();
+    });
 }
 
 function dayLabel(value) {
@@ -916,7 +963,12 @@ async function chooseFolder() {
     body: JSON.stringify({ folder: path }),
   });
   els.folder.value = path;
+  if (els.folderOnly.checked) refreshScope().catch((err) => alert(err.message));
   return path;
+}
+
+function refreshScope() {
+  return loadFolders().then(() => loadFaces()).then(() => search(true));
 }
 
 async function startScan(selectedPath) {
@@ -988,7 +1040,8 @@ els.browse.addEventListener("click", () =>
       alert(err.message);
     })
 );
-els.more.addEventListener("click", () => search(false).catch((err) => alert(err.message)));
+els.more.addEventListener("click", () => loadNextPage(true));
+document.querySelector(".grid-wrap").addEventListener("scroll", () => loadNextPage(), { passive: true });
 els.selectAll.addEventListener("click", () => selectAllPhotos().catch((err) => alert(err.message)));
 els.assignBtn.addEventListener("click", () => {
   const ids = [...state.picked];
@@ -1333,6 +1386,15 @@ els.theme.addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
   localStorage.setItem("picture-index-theme", next);
+});
+
+els.folderOnly.checked = localStorage.getItem("picture-index-folder-only") === "1";
+els.folderOnly.addEventListener("change", () => {
+  localStorage.setItem("picture-index-folder-only", els.folderOnly.checked ? "1" : "0");
+  refreshScope().catch((err) => alert(err.message));
+});
+els.folder.addEventListener("change", () => {
+  if (els.folderOnly.checked) refreshScope().catch((err) => alert(err.message));
 });
 
 const runSearch = debounce(() => search(true).catch((err) => alert(err.message)), 200);

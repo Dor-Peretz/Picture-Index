@@ -113,8 +113,25 @@ def get_photo(conn: sqlite3.Connection, photo_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
 
 
-def list_folders(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT DISTINCT folder FROM photos ORDER BY folder").fetchall()
+def folder_scope(column: str, root: str | None) -> tuple[str, list[Any]]:
+    if root is None:
+        return "1 = 1", []
+    cleaned = root.strip().rstrip("\\/")
+    if not cleaned:
+        return "0 = 1", []
+
+    def literal(text: str) -> str:
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    return (
+        f"({column} = ? OR {column} LIKE ? ESCAPE '\\' OR {column} LIKE ? ESCAPE '\\')",
+        [cleaned, literal(cleaned) + "\\\\%", literal(cleaned) + "/%"],
+    )
+
+
+def list_folders(conn: sqlite3.Connection, root: str | None = None) -> list[str]:
+    clause, params = folder_scope("folder", root)
+    rows = conn.execute(f"SELECT DISTINCT folder FROM photos WHERE {clause} ORDER BY folder", params).fetchall()
     return [row["folder"] for row in rows]
 
 
@@ -418,16 +435,20 @@ def mark_faces_done(conn: sqlite3.Connection, photo_id: int) -> None:
     conn.execute("UPDATE photos SET faces_done = 1 WHERE id = ?", (photo_id,))
 
 
-def list_face_clusters(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_face_clusters(conn: sqlite3.Connection, root: str | None = None) -> list[dict[str, Any]]:
+    clause, params = folder_scope("photos.folder", root)
     rows = conn.execute(
-        """
+        f"""
         SELECT face_clusters.id, face_clusters.label, face_clusters.favorite, COUNT(DISTINCT faces.photo_id) AS count
         FROM face_clusters
         JOIN faces ON faces.cluster_id = face_clusters.id
+        JOIN photos ON photos.id = faces.photo_id
+        WHERE {clause}
         GROUP BY face_clusters.id
         HAVING count > 0
         ORDER BY face_clusters.favorite DESC, CASE WHEN TRIM(face_clusters.label) = '' THEN 1 ELSE 0 END, count DESC, face_clusters.id
-        """
+        """,
+        params,
     ).fetchall()
     return [
         {
@@ -518,12 +539,14 @@ def photo_filters(
     *,
     query: str = "",
     folder: str = "",
+    root: str | None = None,
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
 ) -> tuple[str, list[Any]]:
-    where = ["1 = 1"]
-    params: list[Any] = []
+    scope, scope_params = folder_scope("photos.folder", root)
+    where = [scope]
+    params: list[Any] = list(scope_params)
     match = fts_query(query)
     if match:
         object_likes = []
@@ -560,6 +583,7 @@ def search_photos(
     *,
     query: str = "",
     folder: str = "",
+    root: str | None = None,
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
@@ -567,7 +591,7 @@ def search_photos(
     offset: int = 0,
 ) -> dict[str, Any]:
     sql_where, params = photo_filters(
-        query=query, folder=folder, taken_from=taken_from, taken_to=taken_to, face=face
+        query=query, folder=folder, root=root, taken_from=taken_from, taken_to=taken_to, face=face
     )
     total = conn.execute(
         f"SELECT COUNT(*) AS n FROM photos WHERE {sql_where}",
@@ -590,12 +614,13 @@ def list_locations(
     *,
     query: str = "",
     folder: str = "",
+    root: str | None = None,
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
 ) -> list[dict[str, Any]]:
     sql_where, params = photo_filters(
-        query=query, folder=folder, taken_from=taken_from, taken_to=taken_to, face=face
+        query=query, folder=folder, root=root, taken_from=taken_from, taken_to=taken_to, face=face
     )
     rows = conn.execute(
         f"""

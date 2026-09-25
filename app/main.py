@@ -151,10 +151,10 @@ def resume(job_id: str) -> dict:
 
 
 @app.get("/api/folders")
-def folders() -> dict:
+def folders(root: str | None = None) -> dict:
     conn = db.get_connection()
     try:
-        return {"folders": db.list_folders(conn)}
+        return {"folders": db.list_folders(conn, root)}
     finally:
         conn.close()
 
@@ -163,6 +163,7 @@ def folders() -> dict:
 def locations(
     q: str = "",
     folder: str = "",
+    root: str | None = None,
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
@@ -174,6 +175,7 @@ def locations(
                 conn,
                 query=q,
                 folder=folder,
+                root=root,
                 taken_from=taken_from,
                 taken_to=taken_to,
                 face=face,
@@ -187,6 +189,7 @@ def locations(
 def photos(
     q: str = "",
     folder: str = "",
+    root: str | None = None,
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
@@ -199,6 +202,7 @@ def photos(
             conn,
             query=q,
             folder=folder,
+            root=root,
             taken_from=taken_from,
             taken_to=taken_to,
             face=face,
@@ -233,10 +237,10 @@ def photo(photo_id: int) -> dict:
 
 
 @app.get("/api/faces")
-def faces() -> dict:
+def faces(root: str | None = None) -> dict:
     conn = db.get_connection()
     try:
-        return {"faces": db.list_face_clusters(conn)}
+        return {"faces": db.list_face_clusters(conn, root)}
     finally:
         conn.close()
 
