@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picture Index</title>
+    <link rel="icon" type="image/png" href="/static/logo.png" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem("picture-index-theme") || "light";
+    </script>
+  </head>
+  <body>
+    <header class="titlebar">
+      <div class="brand">
+        <img class="brand-logo" src="/static/logo.png" alt="" width="28" height="28" />
+        <span>Picture Index</span>
+      </div>
+      <div class="folder-control">
+        <input id="folder" type="text" placeholder="No folder selected" spellcheck="false" />
+        <button type="button" class="btn" id="browse-btn">Browse</button>
+      </div>
+      <div class="titlebar-actions">
+        <button type="button" class="btn primary" id="index-btn">Index folder</button>
+        <button type="button" class="btn" id="theme-btn" title="Toggle theme">Theme</button>
+      </div>
+    </header>
+
+    <div id="progress" class="progress hidden">
+      <div class="progress-row">
+        <span id="progress-title">Indexing</span>
+        <span id="progress-count"></span>
+        <button type="button" class="btn small" id="pause-btn">Pause</button>
+        <button type="button" class="btn small" id="cancel-btn">Cancel</button>
+      </div>
+      <div class="bar"><div id="bar-fill"></div></div>
+    </div>
+
+    <main class="workspace">
+      <section class="grid-wrap">
+        <div id="grid" class="grid"></div>
+        <div id="empty" class="empty">Choose a folder of photos and index it. Search works on the filename, the folder, and the date the photo was taken.</div>
+        <button type="button" class="btn more hidden" id="more-btn">Load more</button>
+      </section>
+      <aside class="side">
+        <label class="field">
+          <span>Search</span>
+          <input id="search" type="search" placeholder="Filename or folder" />
+        </label>
+        <label class="field">
+          <span>Folder</span>
+          <select id="folder-filter"><option value="">All folders</option></select>
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>From</span>
+            <input id="taken-from" type="date" />
+          </label>
+          <label class="field">
+            <span>To</span>
+            <input id="taken-to" type="date" />
+          </label>
+        </div>
+        <div id="detail" class="detail">
+          <p class="muted">Select a photo.</p>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status-count">0 photos</span>
+    </footer>
+
+    <div id="picker" class="modal hidden">
+      <div class="dialog" role="dialog" aria-label="Choose folder">
+        <input id="picker-path" type="text" spellcheck="false" />
+        <div id="picker-list" class="folder-list"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn" id="picker-up">Up</button>
+          <button type="button" class="btn" id="picker-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="picker-choose">Use this folder</button>
+        </div>
+      </div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
