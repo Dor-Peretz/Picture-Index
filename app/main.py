@@ -35,6 +35,10 @@ class SettingsUpdate(BaseModel):
     scan_subfolders: bool | None = None
 
 
+class UnindexRequest(BaseModel):
+    ids: list[int] = []
+
+
 class FaceAssign(BaseModel):
     cluster_id: int
 
@@ -275,6 +279,24 @@ def remove_photo(photo_id: int) -> dict:
     for cluster_id in removed_clusters:
         (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
     return {"ok": True}
+
+
+@app.post("/api/photos/unindex")
+def unindex_photos(body: UnindexRequest) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        return {"ok": True, "removed": 0}
+    conn = db.get_connection()
+    try:
+        removed_clusters = db.unindex_photos(conn, ids)
+        conn.commit()
+    finally:
+        conn.close()
+    for photo_id in ids:
+        (thumb_dir() / f"{photo_id}.jpg").unlink(missing_ok=True)
+    for cluster_id in removed_clusters:
+        (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True, "removed": len(ids)}
 
 
 @app.delete("/api/photos/{photo_id}/faces/{face_id}")

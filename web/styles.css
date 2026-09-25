@@ -227,7 +227,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .face-remove { height: 32px; padding: 0 10px; font-size: 12px; }
 .face-merge select { flex: 1; min-width: 0; }
 .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.face.selected { border-color: var(--accent); }
+.face.selected, .face.shown { border-color: var(--accent); }
+.face.shown { box-shadow: 0 0 0 3px var(--accent); }
 .face.dragging { opacity: 0.45; }
 .face.drop-target { border-color: var(--accent); transform: scale(1.08); }
 .face:active { transform: scale(0.96); }
@@ -252,6 +253,27 @@ body.resizing { cursor: col-resize; user-select: none; }
 .field input, .field select { width: 100%; background: var(--surface); }
 
 .count { margin: 0; color: var(--secondary); font-weight: 600; }
+.result-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.picked-count { color: var(--accent); font-weight: 700; }
+.card { position: relative; }
+.pick {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: transparent;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.card.picked .pick { background: var(--accent); color: white; }
+html[data-theme="dark"] .card.picked .pick { color: #10233f; }
 
 .heatmap {
   position: sticky;
@@ -363,6 +385,7 @@ html[data-theme="dark"] .face-mark span { color: #10233f; }
 .detail-faces { display: flex; gap: 8px; flex-wrap: wrap; }
 .detail-faces img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
 .named-face { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; }
+.face-drop { height: 32px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
 #open-btn { align-self: flex-start; }
 
 .modal {

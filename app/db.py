@@ -129,6 +129,30 @@ def delete_photo(conn: sqlite3.Connection, photo_id: int) -> list[int]:
     return removed
 
 
+def unindex_photos(conn: sqlite3.Connection, photo_ids: list[int]) -> list[int]:
+    removed: list[int] = []
+    unique = list(dict.fromkeys(int(photo_id) for photo_id in photo_ids))
+    for start in range(0, len(unique), 400):
+        chunk = unique[start : start + 400]
+        marks = ",".join("?" * len(chunk))
+        paths = conn.execute(f"SELECT path FROM photos WHERE id IN ({marks})", chunk).fetchall()
+        conn.executemany("INSERT OR IGNORE INTO excluded(path) VALUES (?)", [(row["path"],) for row in paths])
+        clusters = [
+            int(row["cluster_id"])
+            for row in conn.execute(f"SELECT DISTINCT cluster_id FROM faces WHERE photo_id IN ({marks})", chunk)
+        ]
+        conn.execute(f"DELETE FROM photos_fts WHERE rowid IN ({marks})", chunk)
+        conn.execute(f"DELETE FROM photos WHERE id IN ({marks})", chunk)
+        for cluster_id in clusters:
+            left = conn.execute("SELECT COUNT(*) AS n FROM faces WHERE cluster_id = ?", (cluster_id,)).fetchone()["n"]
+            if int(left) == 0:
+                conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+                removed.append(cluster_id)
+            else:
+                conn.execute("UPDATE face_clusters SET count = ? WHERE id = ?", (int(left), cluster_id))
+    return removed
+
+
 def exclude_path(conn: sqlite3.Connection, path: str) -> None:
     conn.execute("INSERT OR IGNORE INTO excluded(path) VALUES (?)", (path,))
 
@@ -163,7 +187,7 @@ def faces_for_photo(conn: sqlite3.Connection, photo_id: int) -> list[dict[str, A
         FROM faces
         JOIN face_clusters ON face_clusters.id = faces.cluster_id
         WHERE faces.photo_id = ?
-        ORDER BY faces.id
+        ORDER BY CASE WHEN TRIM(face_clusters.label) = '' THEN 1 ELSE 0 END, faces.id
         """,
         (photo_id,),
     ).fetchall()
@@ -258,7 +282,7 @@ def list_face_clusters(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         JOIN faces ON faces.cluster_id = face_clusters.id
         GROUP BY face_clusters.id
         HAVING count > 0
-        ORDER BY count DESC, face_clusters.id
+        ORDER BY CASE WHEN TRIM(face_clusters.label) = '' THEN 1 ELSE 0 END, count DESC, face_clusters.id
         """
     ).fetchall()
     return [

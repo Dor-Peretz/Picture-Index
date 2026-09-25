@@ -32,6 +32,9 @@ const els = {
   detail: document.getElementById("detail"),
   remove: document.getElementById("remove-btn"),
   status: document.getElementById("status-count"),
+  selectAll: document.getElementById("select-all-btn"),
+  unindex: document.getElementById("unindex-btn"),
+  pickedCount: document.getElementById("picked-count"),
   picker: document.getElementById("picker"),
   pickerPath: document.getElementById("picker-path"),
   pickerList: document.getElementById("picker-list"),
@@ -48,7 +51,9 @@ const state = {
   activePlace: null,
   total: 0,
   selectedId: null,
+  picked: new Set(),
   markedFace: null,
+  shownFaceId: null,
   detail: null,
   faceId: null,
   jobId: null,
@@ -199,6 +204,20 @@ async function loadFaces() {
     .map((face) => `<option value="${face.id}">${escapeHtml(face.label || "Unnamed")} (${face.count})</option>`)
     .join("")}`;
   els.personFilter.value = data.faces.some((face) => String(face.id) === selectedPerson) ? selectedPerson : "";
+  if (state.shownFaceId) highlightPerson(state.shownFaceId, false);
+}
+
+function highlightPerson(clusterId, scroll) {
+  state.shownFaceId = clusterId || null;
+  els.faces.querySelectorAll(".face").forEach((button) => {
+    button.classList.toggle("shown", Number(button.dataset.face) === state.shownFaceId);
+  });
+  if (scroll === false || !state.shownFaceId) return;
+  els.faces.querySelector(`.face[data-face="${state.shownFaceId}"]`)?.closest(".face-card")?.scrollIntoView({
+    behavior: "smooth",
+    inline: "center",
+    block: "nearest",
+  });
 }
 
 async function search(reset) {
@@ -206,6 +225,7 @@ async function search(reset) {
     state.offset = 0;
     state.photos = [];
     state.activePlace = null;
+    state.picked = new Set();
   }
   const data = await api(`/api/photos?${queryString()}`);
   state.total = data.total;
@@ -420,7 +440,8 @@ function renderGrid() {
           ${group.photos
             .map(
               (photo) => `
-              <button type="button" class="card${photo.id === state.selectedId ? " selected" : ""}" data-id="${photo.id}">
+              <button type="button" class="card${photo.id === state.selectedId ? " selected" : ""}${state.picked.has(photo.id) ? " picked" : ""}" data-id="${photo.id}">
+                <span class="pick" data-pick="${photo.id}" aria-label="Select photo">✓</span>
                 <img src="/api/photos/${photo.id}/thumb" alt="" />
                 <div class="meta">
                   <div class="name">${escapeHtml(photo.filename)}</div>
@@ -434,6 +455,34 @@ function renderGrid() {
     )
     .join("");
   els.more.classList.toggle("hidden", locationMode || state.photos.length >= state.total || !hasPhotos);
+  syncPicked();
+}
+
+function syncPicked() {
+  const count = state.picked.size;
+  els.pickedCount.textContent = count ? `${count} selected` : "";
+  els.pickedCount.classList.toggle("hidden", !count);
+  els.unindex.classList.toggle("hidden", !count);
+  els.unindex.textContent = count ? `Unindex ${count}` : "Unindex";
+  els.selectAll.textContent = state.total > 0 && count >= state.total ? "Clear selection" : "Select all";
+}
+
+async function selectAllPhotos() {
+  if (state.total > 0 && state.picked.size >= state.total) {
+    state.picked = new Set();
+    renderGrid();
+    return;
+  }
+  els.selectAll.disabled = true;
+  els.selectAll.textContent = "Selecting…";
+  try {
+    const data = await api(`/api/locations?${filterParams()}`);
+    state.picked = new Set(data.items.map((photo) => photo.id));
+    renderGrid();
+  } finally {
+    els.selectAll.disabled = false;
+    syncPicked();
+  }
 }
 
 els.heatmapCanvas.addEventListener("click", (event) => {
@@ -465,6 +514,8 @@ function renderDetail(photo) {
   if (!photo) {
     state.detail = null;
     state.markedFace = null;
+    state.shownFaceId = null;
+    highlightPerson(null, false);
     els.detail.innerHTML = `<p class="muted">Select a photo to see what is in it and open the file.</p>`;
     return;
   }
@@ -478,6 +529,7 @@ function renderDetail(photo) {
           <span class="named-face">
             <img src="/api/faces/${face.cluster_id}/thumb" alt="" />
             <span>${escapeHtml(face.label || "Unnamed")}</span>
+            <button type="button" class="btn ghost danger face-drop" data-face-row="${face.id}">Remove from this photo</button>
           </span>`
         )
         .join("")}</div>`
@@ -557,22 +609,36 @@ function removeFace(id) {
 document.getElementById("remove-face-btn").addEventListener("click", () => {
   if (state.faceId) removeFace(state.faceId);
 });
+function dropFaceFromPhoto(faceId) {
+  if (!state.selectedId || !faceId) return;
+  api(`/api/photos/${state.selectedId}/faces/${faceId}`, { method: "DELETE" })
+    .then(() => {
+      if (state.markedFace === faceId) state.markedFace = null;
+      return loadFaces();
+    })
+    .then(() => api(`/api/photos/${state.selectedId}`))
+    .then((photo) => {
+      if (photo && state.selectedId === photo.id) renderDetail(photo);
+    })
+    .catch((err) => alert(err.message));
+}
+
 els.detail.addEventListener("click", (event) => {
+  const drop = event.target.closest(".face-drop");
+  if (drop) {
+    dropFaceFromPhoto(Number(drop.dataset.faceRow));
+    return;
+  }
   const mark = event.target.closest("[data-mark]");
   if (mark && state.detail) {
     state.markedFace = Number(mark.dataset.mark);
+    const face = (state.detail.faces || []).find((item) => item.id === state.markedFace);
     renderDetail(state.detail);
+    highlightPerson(face ? face.cluster_id : null);
     return;
   }
-  if (event.target.id === "remove-mark-btn" && state.selectedId && state.markedFace) {
-    api(`/api/photos/${state.selectedId}/faces/${state.markedFace}`, { method: "DELETE" })
-      .then(() => {
-        state.markedFace = null;
-        return loadFaces();
-      })
-      .then(() => api(`/api/photos/${state.selectedId}`))
-      .then((photo) => renderDetail(photo))
-      .catch((err) => alert(err.message));
+  if (event.target.id === "remove-mark-btn") {
+    dropFaceFromPhoto(state.markedFace);
     return;
   }
   if (event.target.id === "reassign-btn" && state.selectedId && state.markedFace) {
@@ -762,6 +828,36 @@ els.browse.addEventListener("click", () =>
     })
 );
 els.more.addEventListener("click", () => search(false).catch((err) => alert(err.message)));
+els.selectAll.addEventListener("click", () => selectAllPhotos().catch((err) => alert(err.message)));
+els.unindex.addEventListener("click", () => {
+  const ids = [...state.picked];
+  if (!ids.length) return;
+  const ok = confirm(
+    `Unindex ${ids.length} photo${ids.length === 1 ? "" : "s"}? The files stay in the folder. Faces, objects, and location saved for them will be deleted.`
+  );
+  if (!ok) return;
+  els.unindex.disabled = true;
+  els.unindex.textContent = "Unindexing…";
+  api("/api/photos/unindex", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  })
+    .then(() => {
+      state.picked = new Set();
+      if (ids.includes(state.selectedId)) {
+        state.selectedId = null;
+        renderDetail(null);
+      }
+      return loadFaces();
+    })
+    .then(() => search(true))
+    .catch((err) => alert(err.message))
+    .finally(() => {
+      els.unindex.disabled = false;
+      syncPicked();
+    });
+});
 els.pause.addEventListener("click", async () => {
   if (!state.jobId) return;
   state.paused = !state.paused;
@@ -857,6 +953,18 @@ els.mergeBtn.addEventListener("click", () => {
     .catch((err) => alert(err.message));
 });
 els.grid.addEventListener("click", (event) => {
+  const pick = event.target.closest(".pick");
+  if (pick) {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = Number(pick.dataset.pick);
+    if (state.picked.has(id)) state.picked.delete(id);
+    else state.picked.add(id);
+    const card = pick.closest(".card");
+    if (card) card.classList.toggle("picked", state.picked.has(id));
+    syncPicked();
+    return;
+  }
   const card = event.target.closest(".card");
   if (!card) return;
   const id = Number(card.dataset.id);

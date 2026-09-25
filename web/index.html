@@ -95,7 +95,12 @@
               <input id="taken-to" type="date" />
             </label>
           </div>
-          <p id="status-count" class="count">0 photos</p>
+          <div class="result-bar">
+            <p id="status-count" class="count">0 photos</p>
+            <button type="button" class="btn ghost" id="select-all-btn">Select all</button>
+            <button type="button" class="btn ghost danger hidden" id="unindex-btn">Unindex</button>
+            <span id="picked-count" class="picked-count hidden"></span>
+          </div>
         </div>
         <div id="heatmap" class="heatmap hidden">
           <canvas id="heatmap-canvas" aria-label="Heat map of where photos were taken"></canvas>
