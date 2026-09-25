@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,33 @@ except ImportError:
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".bmp"}
 THUMB_EDGE = 960
+_WHATSAPP_STAMP = re.compile(
+    r"WhatsApp Image (\d{4})-(\d{2})-(\d{2}) at (\d{2})\.(\d{2})\.(\d{2})",
+    re.IGNORECASE,
+)
+_WHATSAPP_DAY = re.compile(r"(?:IMG|STK)-(\d{4})(\d{2})(\d{2})-WA\d+", re.IGNORECASE)
+
+
+def _valid_when(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0) -> str | None:
+    if year < 1990 or year > datetime.now().year + 1:
+        return None
+    try:
+        return datetime(year, month, day, hour, minute, second).isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def date_from_name(filename: str) -> str | None:
+    """WhatsApp puts the send date in the filename when the photo has no camera date."""
+    stamped = _WHATSAPP_STAMP.search(filename)
+    if stamped:
+        year, month, day, hour, minute, second = (int(part) for part in stamped.groups())
+        return _valid_when(year, month, day, hour, minute, second)
+    day_only = _WHATSAPP_DAY.search(filename)
+    if day_only:
+        year, month, day = (int(part) for part in day_only.groups())
+        return _valid_when(year, month, day)
+    return None
 
 
 def is_image(path: Path) -> bool:
@@ -55,7 +83,7 @@ def read_location(path: Path) -> tuple[float, float] | None:
 def read_image(path: Path, thumb_path: Path) -> dict:
     with Image.open(path) as image:
         image.seek(0)
-        taken_at = _exif_datetime(image)
+        taken_at = _exif_datetime(image) or date_from_name(path.name)
         framed = ImageOps.exif_transpose(image)
         if framed.mode not in ("RGB", "L"):
             framed = framed.convert("RGB")

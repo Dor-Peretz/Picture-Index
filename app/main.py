@@ -167,6 +167,7 @@ def locations(
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
+    no_face: bool = False,
 ) -> dict:
     conn = db.get_connection()
     try:
@@ -179,6 +180,7 @@ def locations(
                 taken_from=taken_from,
                 taken_to=taken_to,
                 face=face,
+                no_face=no_face,
             )
         }
     finally:
@@ -193,6 +195,7 @@ def photos(
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
+    no_face: bool = False,
     limit: int = Query(default=80, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -206,6 +209,7 @@ def photos(
             taken_from=taken_from,
             taken_to=taken_to,
             face=face,
+            no_face=no_face,
             limit=limit,
             offset=offset,
         )
@@ -240,7 +244,7 @@ def photo(photo_id: int) -> dict:
 def faces(root: str | None = None) -> dict:
     conn = db.get_connection()
     try:
-        return {"faces": db.list_face_clusters(conn, root)}
+        return {"faces": db.list_face_clusters(conn, root), "no_face": db.no_face_count(conn, root)}
     finally:
         conn.close()
 

@@ -435,6 +435,20 @@ def mark_faces_done(conn: sqlite3.Connection, photo_id: int) -> None:
     conn.execute("UPDATE photos SET faces_done = 1 WHERE id = ?", (photo_id,))
 
 
+def no_face_count(conn: sqlite3.Connection, root: str | None = None) -> int:
+    clause, params = folder_scope("photos.folder", root)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n FROM photos
+        WHERE {clause}
+          AND photos.faces_done = 1
+          AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.photo_id = photos.id)
+        """,
+        params,
+    ).fetchone()
+    return int(row["n"])
+
+
 def list_face_clusters(conn: sqlite3.Connection, root: str | None = None) -> list[dict[str, Any]]:
     clause, params = folder_scope("photos.folder", root)
     rows = conn.execute(
@@ -543,6 +557,7 @@ def photo_filters(
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
+    no_face: bool = False,
 ) -> tuple[str, list[Any]]:
     scope, scope_params = folder_scope("photos.folder", root)
     where = [scope]
@@ -572,7 +587,11 @@ def photo_filters(
     if taken_to:
         where.append("photos.taken_at < ?")
         params.append(taken_to + "T99")
-    if face:
+    if no_face:
+        where.append(
+            "photos.faces_done = 1 AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.photo_id = photos.id)"
+        )
+    elif face:
         where.append("photos.id IN (SELECT photo_id FROM faces WHERE cluster_id = ?)")
         params.append(face)
     return " AND ".join(where), params
@@ -587,11 +606,18 @@ def search_photos(
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
+    no_face: bool = False,
     limit: int = 80,
     offset: int = 0,
 ) -> dict[str, Any]:
     sql_where, params = photo_filters(
-        query=query, folder=folder, root=root, taken_from=taken_from, taken_to=taken_to, face=face
+        query=query,
+        folder=folder,
+        root=root,
+        taken_from=taken_from,
+        taken_to=taken_to,
+        face=face,
+        no_face=no_face,
     )
     total = conn.execute(
         f"SELECT COUNT(*) AS n FROM photos WHERE {sql_where}",
@@ -599,7 +625,12 @@ def search_photos(
     ).fetchone()["n"]
     rows = conn.execute(
         f"""
-        SELECT photos.* FROM photos
+        SELECT photos.*,
+          CASE
+            WHEN photos.faces_done = 1 AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.photo_id = photos.id) THEN 1
+            ELSE 0
+          END AS no_face
+        FROM photos
         WHERE {sql_where}
         ORDER BY photos.taken_at IS NULL, photos.taken_at DESC, photos.filename
         LIMIT ? OFFSET ?
@@ -618,13 +649,24 @@ def list_locations(
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
+    no_face: bool = False,
 ) -> list[dict[str, Any]]:
     sql_where, params = photo_filters(
-        query=query, folder=folder, root=root, taken_from=taken_from, taken_to=taken_to, face=face
+        query=query,
+        folder=folder,
+        root=root,
+        taken_from=taken_from,
+        taken_to=taken_to,
+        face=face,
+        no_face=no_face,
     )
     rows = conn.execute(
         f"""
-        SELECT id, filename, taken_at, latitude, longitude
+        SELECT id, filename, taken_at, latitude, longitude,
+          CASE
+            WHEN photos.faces_done = 1 AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.photo_id = photos.id) THEN 1
+            ELSE 0
+          END AS no_face
         FROM photos
         WHERE {sql_where}
         ORDER BY taken_at IS NULL, taken_at DESC, filename

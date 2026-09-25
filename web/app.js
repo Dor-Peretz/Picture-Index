@@ -85,6 +85,12 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+function personName(person) {
+  const label = (person.label || "").trim();
+  if (label) return label;
+  return `Unnamed ${person.cluster_id || person.id}`;
+}
+
 async function api(path, options, attempt = 0) {
   try {
     const response = await fetch(path, options);
@@ -194,7 +200,8 @@ function filterParams() {
   if (els.folderFilter.value) params.set("folder", els.folderFilter.value);
   if (els.takenFrom.value) params.set("taken_from", els.takenFrom.value);
   if (els.takenTo.value) params.set("taken_to", els.takenTo.value);
-  if (state.faceId) params.set("face", String(state.faceId));
+  if (state.faceId === "none") params.set("no_face", "1");
+  else if (state.faceId) params.set("face", String(state.faceId));
   return params;
 }
 
@@ -210,41 +217,51 @@ async function loadFaces() {
   const root = selectedRoot();
   if (root !== null) params.set("root", root);
   const data = await api(`/api/faces?${params}`);
-  if (state.faceId && !data.faces.some((face) => face.id === state.faceId)) state.faceId = null;
+  if (state.faceId !== "none" && state.faceId && !data.faces.some((face) => face.id === state.faceId)) state.faceId = null;
+  state.noFaceCount = Number(data.no_face) || 0;
+  state.faceList = data.faces;
+  const noFaceCard = state.noFaceCount
+    ? `<div class="face-card">
+        <button type="button" class="face no-face${state.faceId === "none" ? " selected" : ""}" data-no-face="1" title="No face · ${state.noFaceCount} photos. Right-click a photo to tag someone.">No face</button>
+        <span class="face-count">${state.noFaceCount}</span>
+      </div>`
+    : "";
   if (!data.faces.length) {
-    state.faceList = [];
-    els.faces.innerHTML = `<span class="muted">${els.folderOnly.checked ? "No faces saved in this folder." : "Faces appear here after indexing."}</span>`;
+    els.faces.innerHTML = noFaceCard || `<span class="muted">${els.folderOnly.checked ? "No faces saved in this folder." : "Faces appear here after indexing."}</span>`;
     els.faceActions.classList.add("hidden");
     els.faceMerge.classList.add("hidden");
     fillAssignPeople();
+    const selectedPerson = state.faceId === "none" ? "none" : "";
+    els.personFilter.innerHTML = `<option value="">All people</option>${state.noFaceCount ? `<option value="none">No face (${state.noFaceCount})</option>` : ""}`;
+    els.personFilter.value = selectedPerson;
     return;
   }
-  state.faceList = data.faces;
-  els.faces.innerHTML = data.faces
+  els.faces.innerHTML = noFaceCard + data.faces
     .map(
       (face) => `
       <div class="face-card">
         <button type="button" class="face-fav${face.favorite ? " on" : ""}" data-fav="${face.id}" aria-pressed="${face.favorite ? "true" : "false"}" aria-label="${face.favorite ? "Remove from favorites" : "Favorite"}">★</button>
-        <button type="button" class="face${face.id === state.faceId ? " selected" : ""}" draggable="true" data-face="${face.id}" title="${escapeHtml(face.label || "Unnamed")} · ${face.count} photos. Drag onto another face to merge.">
+        <button type="button" class="face${face.id === state.faceId ? " selected" : ""}" draggable="true" data-face="${face.id}" title="${escapeHtml(personName(face))} · ${face.count} photos. Drag onto another face to merge.">
           <img draggable="false" src="${faceSrc(face.id)}" alt="" />
+          ${(face.label || "").trim() ? "" : `<span class="face-number">${face.id}</span>`}
         </button>
-        <input class="face-name" data-face="${face.id}" value="${escapeHtml(face.label)}" placeholder="Name" />
+        <input class="face-name" data-face="${face.id}" value="${escapeHtml(face.label)}" placeholder="${escapeHtml((face.label || "").trim() ? "Name" : personName(face))}" />
       </div>`
     )
     .join("");
   const others = data.faces.filter((face) => face.id !== state.faceId);
-  els.faceActions.classList.toggle("hidden", !state.faceId);
   const selectedFace = data.faces.find((face) => face.id === state.faceId);
+  els.faceActions.classList.toggle("hidden", !selectedFace);
   els.reindexFace.classList.toggle("hidden", !selectedFace || Boolean((selectedFace.label || "").trim()));
-  els.faceMerge.classList.toggle("hidden", !state.faceId || others.length === 0);
+  els.faceMerge.classList.toggle("hidden", !selectedFace || others.length === 0);
   els.mergeWith.innerHTML = others
-    .map((face) => `<option value="${face.id}">${escapeHtml(face.label || "Unnamed")} (${face.count})</option>`)
+    .map((face) => `<option value="${face.id}">${escapeHtml(personName(face))} (${face.count})</option>`)
     .join("");
-  const selectedPerson = state.faceId ? String(state.faceId) : "";
-  els.personFilter.innerHTML = `<option value="">All people</option>${data.faces
-    .map((face) => `<option value="${face.id}">${escapeHtml(face.label || "Unnamed")} (${face.count})</option>`)
+  const selectedPerson = state.faceId === "none" ? "none" : state.faceId ? String(state.faceId) : "";
+  els.personFilter.innerHTML = `<option value="">All people</option>${state.noFaceCount ? `<option value="none">No face (${state.noFaceCount})</option>` : ""}${data.faces
+    .map((face) => `<option value="${face.id}">${escapeHtml(personName(face))} (${face.count})</option>`)
     .join("")}`;
-  els.personFilter.value = data.faces.some((face) => String(face.id) === selectedPerson) ? selectedPerson : "";
+  els.personFilter.value = selectedPerson === "none" || data.faces.some((face) => String(face.id) === selectedPerson) ? selectedPerson : "";
   if (state.shownFaceId) highlightPerson(state.shownFaceId, false);
   fillAssignPeople();
 }
@@ -253,7 +270,7 @@ function fillAssignPeople() {
   const people = state.faceList || [];
   const current = els.assignPerson.value;
   els.assignPerson.innerHTML = people
-    .map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`)
+    .map((person) => `<option value="${person.id}">${escapeHtml(personName(person))} (${person.count})</option>`)
     .join("");
   const preferred = people.some((person) => String(person.id) === current)
     ? current
@@ -540,6 +557,7 @@ function renderGrid() {
               (photo) => `
               <button type="button" class="card${photo.id === state.selectedId ? " selected" : ""}${state.picked.has(photo.id) ? " picked" : ""}" data-id="${photo.id}">
                 <span class="pick" data-pick="${photo.id}" aria-label="Select photo">✓</span>
+                ${photo.no_face ? `<span class="no-face-tag">No face</span>` : ""}
                 <img src="/api/photos/${photo.id}/thumb" alt="" />
                 <div class="meta">
                   <div class="name">${escapeHtml(photo.filename)}</div>
@@ -654,19 +672,19 @@ function renderDetail(photo) {
           (face) => `
           <span class="named-face">
             <img src="${faceSrc(face.cluster_id)}" alt="" />
-            <span>${escapeHtml(face.label || "Unnamed")}</span>
+            <span>${escapeHtml(personName(face))}</span>
             <button type="button" class="btn ghost danger face-drop" data-face-row="${face.id}">Remove from this photo</button>
           </span>`
         )
         .join("")}</div>`
     : photo.faces_done
-      ? "No faces found"
+      ? "No face. Right-click the photo to tag someone."
       : "Not scanned for faces yet";
   const marks = faces
     .filter((face) => face.x != null)
     .map((face) => {
       const selected = state.markedFace === face.id ? " selected" : "";
-      return `<button type="button" class="face-mark${selected}" data-mark="${face.id}" style="left:${face.x * 100}%;top:${face.y * 100}%;width:${Math.max(face.w, 0.04) * 100}%;height:${Math.max(face.h, 0.04) * 100}%"><span>${escapeHtml(face.label || "Face")}</span></button>`;
+      return `<button type="button" class="face-mark${selected}" data-mark="${face.id}" style="left:${face.x * 100}%;top:${face.y * 100}%;width:${Math.max(face.w, 0.04) * 100}%;height:${Math.max(face.h, 0.04) * 100}%"><span>${escapeHtml(personName(face))}</span></button>`;
     })
     .join("");
   const draft = state.missedFace && state.missedFace.photoId === photo.id
@@ -682,10 +700,10 @@ function renderDetail(photo) {
     : "";
   const editor = marked
     ? `<div class="face-editor">
-        <p>This face is <strong>${escapeHtml(marked.label || "not recognized")}</strong>.</p>
+        <p>This face is <strong>${escapeHtml(personName(marked))}</strong>.</p>
         ${nameField}
         <label class="field"><span>Or this is</span>
-          <select id="reassign-face">${choices.map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`).join("")}</select>
+          <select id="reassign-face">${choices.map((person) => `<option value="${person.id}">${escapeHtml(personName(person))} (${person.count})</option>`).join("")}</select>
         </label>
         <div class="side-actions">
           <button type="button" class="btn" id="avatar-btn">Use as avatar</button>
@@ -749,6 +767,21 @@ function removeFace(id) {
 document.getElementById("remove-face-btn").addEventListener("click", () => {
   if (state.faceId) removeFace(state.faceId);
 });
+function markNoFace(photoId, on) {
+  const apply = (list) => {
+    const photo = list.find((item) => item.id === photoId);
+    if (photo) photo.no_face = on ? 1 : 0;
+  };
+  apply(state.photos);
+  apply(state.mapPhotos);
+  if (!on && state.faceId === "none") {
+    state.photos = state.photos.filter((item) => item.id !== photoId);
+    state.mapPhotos = state.mapPhotos.filter((item) => item.id !== photoId);
+    state.total = Math.max(0, (state.total || 0) - 1);
+  }
+  renderGrid();
+}
+
 function dropFaceFromPhoto(faceId) {
   if (!state.selectedId || !faceId) return;
   api(`/api/photos/${state.selectedId}/faces/${faceId}`, { method: "DELETE" })
@@ -758,7 +791,9 @@ function dropFaceFromPhoto(faceId) {
     })
     .then(() => api(`/api/photos/${state.selectedId}`))
     .then((photo) => {
-      if (photo && state.selectedId === photo.id) renderDetail(photo);
+      if (!photo || state.selectedId !== photo.id) return;
+      renderDetail(photo);
+      if (!(photo.faces || []).length && photo.faces_done) markNoFace(photo.id, true);
     })
     .catch((err) => alert(err.message));
 }
@@ -1051,7 +1086,7 @@ els.assignBtn.addEventListener("click", () => {
   const clusterId = Number(els.assignPerson.value);
   const person = (state.faceList || []).find((item) => item.id === clusterId);
   if (!ids.length || !person) return;
-  const name = person.label || "Unnamed";
+  const name = personName(person);
   const ok = confirm(`Assign ${ids.length} photo${ids.length === 1 ? "" : "s"} to ${name}?`);
   if (!ok) return;
   const openId = state.selectedId;
@@ -1162,7 +1197,7 @@ els.faces.addEventListener("dragend", () => {
 });
 els.faces.addEventListener("dragover", (event) => {
   const face = event.target.closest(".face");
-  if (!face) return;
+  if (!face || face.dataset.noFace) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
   els.faces.querySelectorAll(".drop-target").forEach((node) => node.classList.remove("drop-target"));
@@ -1211,7 +1246,13 @@ els.faces.addEventListener("click", (event) => {
   }
   const button = event.target.closest(".face");
   if (!button) return;
+  if (button.dataset.noFace) {
+    state.faceId = state.faceId === "none" ? null : "none";
+    loadFaces().then(() => search(true)).catch((err) => alert(err.message));
+    return;
+  }
   const id = Number(button.dataset.face);
+  if (!id) return;
   state.faceId = state.faceId === id ? null : id;
   loadFaces().then(() => search(true)).catch((err) => alert(err.message));
 });
@@ -1268,7 +1309,7 @@ function openMissedMenu(event, img) {
   };
   const people = state.faceList || [];
   els.missedPerson.innerHTML = `<option value="">Choose a person</option>${people
-    .map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`)
+    .map((person) => `<option value="${person.id}">${escapeHtml(personName(person))} (${person.count})</option>`)
     .join("")}`;
   if (state.faceId && people.some((person) => person.id === state.faceId)) {
     els.missedPerson.value = String(state.faceId);
@@ -1330,6 +1371,7 @@ els.missedAdd.addEventListener("click", () => {
       els.faceMenu.classList.add("hidden");
       if (result.cluster_id) state.avatarVersion[result.cluster_id] = Date.now();
       await loadFaces();
+      markNoFace(photoId, false);
       selectPhoto(photoId);
     })
     .catch((err) => alert(err.message))
@@ -1453,7 +1495,8 @@ els.radius.addEventListener("change", () => {
   if (els.groupBy.value === "location") renderGrid();
 });
 els.personFilter.addEventListener("change", () => {
-  state.faceId = els.personFilter.value ? Number(els.personFilter.value) : null;
+  const personValue = els.personFilter.value;
+  state.faceId = personValue === "none" ? "none" : personValue ? Number(personValue) : null;
   loadFaces().then(() => search(true)).catch((err) => alert(err.message));
 });
 els.takenFrom.addEventListener("change", runSearch);

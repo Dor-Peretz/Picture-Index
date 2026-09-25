@@ -227,7 +227,21 @@ body.resizing { cursor: col-resize; user-select: none; }
   line-height: 1;
 }
 .face-fav.on { color: #c58a00; }
+.face-count { font-size: 12px; font-weight: 700; color: var(--secondary); }
+.no-face-tag {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #1c2430;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
 .face {
+  position: relative;
   width: 56px;
   height: 56px;
   padding: 0;
@@ -243,6 +257,32 @@ body.resizing { cursor: col-resize; user-select: none; }
 .face-remove { height: 32px; padding: 0 10px; font-size: 12px; }
 .face-merge select { flex: 1; min-width: 0; }
 .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.face-number {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 1;
+  max-width: 100%;
+  padding: 0 4px;
+  background: var(--accent);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.face.no-face {
+  width: 72px;
+  overflow: visible;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  color: var(--secondary);
+  cursor: pointer;
+}
 .face.selected, .face.shown { border-color: var(--accent); }
 .face.shown { box-shadow: 0 0 0 3px var(--accent); }
 .face.dragging { opacity: 0.45; }
