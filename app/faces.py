@@ -12,6 +12,8 @@ from app.paths import face_dir, model_dir
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 MATCH_THRESHOLD = 0.363
+# Used only when reindexing an unnamed face onto people who already have a name.
+REINDEX_MATCH_THRESHOLD = 0.30
 # YuNet's own score. 0.8 means the detector is 80% sure this is a face.
 MIN_SCORE = 0.8
 # On the 960px preview, a shorter side under 80px is too small to match in other photos.
@@ -121,13 +123,31 @@ def detect_faces(image_path: Path) -> list[dict]:
     return faces
 
 
-def assign_cluster(conn, embedding: np.ndarray, crop: Image.Image) -> int:
+def _same_face(left: tuple[float, float, float, float], right: tuple[float, float, float, float]) -> bool:
+    ax, ay, aw, ah = left
+    bx, by, bw, bh = right
+    overlap_w = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    overlap_h = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    overlap = overlap_w * overlap_h
+    if overlap <= 0:
+        return False
+    union = aw * ah + bw * bh - overlap
+    return union > 0 and overlap / union >= 0.3
+
+
+def assign_cluster(conn, embedding: np.ndarray, crop: Image.Image, skip: set[int] | None = None) -> int:
     best_id = None
     best_score = MATCH_THRESHOLD
     rows = conn.execute("SELECT id, centroid FROM face_clusters").fetchall()
     vector = embedding.astype(np.float32)
+    ignored = skip or set()
     for row in rows:
+        cluster_id = int(row["id"])
+        if cluster_id in ignored:
+            continue
         centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        if centroid.size != vector.size:
+            continue
         score = _cosine(vector, centroid)
         if score >= best_score:
             best_score = score
@@ -186,6 +206,61 @@ def merge_clusters(conn, keep_id: int, drop_id: int) -> int:
     conn.commit()
     (face_dir() / f"{drop_id}.jpg").unlink(missing_ok=True)
     return keep_id
+
+
+def match_existing_person(conn, embedding: np.ndarray) -> int | None:
+    vector = embedding.astype(np.float32)
+    ranked: list[tuple[float, int]] = []
+    rows = conn.execute(
+        "SELECT id, centroid FROM face_clusters WHERE TRIM(label) != ''"
+    ).fetchall()
+    for row in rows:
+        centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        if centroid.size != vector.size:
+            continue
+        ranked.append((_cosine(vector, centroid), int(row["id"])))
+    if not ranked:
+        return None
+    ranked.sort(reverse=True)
+    best_score, best_id = ranked[0]
+    second_score = ranked[1][0] if len(ranked) > 1 else -1.0
+    if best_score < REINDEX_MATCH_THRESHOLD or best_score - second_score < 0.03:
+        return None
+    if best_score >= MATCH_THRESHOLD:
+        row = conn.execute("SELECT centroid, count FROM face_clusters WHERE id = ?", (best_id,)).fetchone()
+        count = int(row["count"])
+        centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        updated = (centroid * count + vector) / (count + 1)
+        conn.execute(
+            "UPDATE face_clusters SET centroid = ?, count = ? WHERE id = ?",
+            (updated.astype(np.float32).tobytes(), count + 1, best_id),
+        )
+    return best_id
+
+
+def replace_unnamed_face(conn, photo_id: int, cluster_id: int, found: list[dict]) -> None:
+    from app import db
+
+    kept = [
+        (float(row["x"]), float(row["y"]), float(row["w"]), float(row["h"]))
+        for row in conn.execute(
+            "SELECT x, y, w, h FROM faces WHERE photo_id = ? AND cluster_id != ? AND x IS NOT NULL",
+            (photo_id, cluster_id),
+        )
+    ]
+    conn.execute("DELETE FROM faces WHERE photo_id = ? AND cluster_id = ?", (photo_id, cluster_id))
+    db._drop_cluster_if_empty(conn, cluster_id)
+    for face in found:
+        if any(_same_face(face["box"], box) for box in kept):
+            continue
+        matched = match_existing_person(conn, face["embedding"])
+        if matched is None:
+            continue
+        conn.execute(
+            "INSERT INTO faces (photo_id, cluster_id, x, y, w, h) VALUES (?, ?, ?, ?, ?, ?)",
+            (photo_id, matched, *face["box"]),
+        )
+    conn.execute("UPDATE photos SET faces_done = 1 WHERE id = ?", (photo_id,))
 
 
 def index_photo_faces(conn, photo_id: int, image_path: Path) -> int:

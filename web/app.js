@@ -19,6 +19,7 @@ const els = {
   search: document.getElementById("search"),
   faces: document.getElementById("faces"),
   faceActions: document.getElementById("face-actions"),
+  reindexFace: document.getElementById("reindex-face-btn"),
   faceMerge: document.getElementById("face-merge"),
   mergeWith: document.getElementById("merge-with"),
   mergeBtn: document.getElementById("merge-btn"),
@@ -233,6 +234,8 @@ async function loadFaces() {
     .join("");
   const others = data.faces.filter((face) => face.id !== state.faceId);
   els.faceActions.classList.toggle("hidden", !state.faceId);
+  const selectedFace = data.faces.find((face) => face.id === state.faceId);
+  els.reindexFace.classList.toggle("hidden", !selectedFace || Boolean((selectedFace.label || "").trim()));
   els.faceMerge.classList.toggle("hidden", !state.faceId || others.length === 0);
   els.mergeWith.innerHTML = others
     .map((face) => `<option value="${face.id}">${escapeHtml(face.label || "Unnamed")} (${face.count})</option>`)
@@ -1098,6 +1101,31 @@ els.unindex.addEventListener("click", () => {
     .finally(() => {
       els.unindex.disabled = false;
       syncPicked();
+    });
+});
+els.reindexFace.addEventListener("click", () => {
+  const person = (state.faceList || []).find((item) => item.id === state.faceId);
+  if (!person || (person.label || "").trim()) return;
+  const count = person.count;
+  const ok = confirm(
+    `Index this unnamed face again on ${count} photo${count === 1 ? "" : "s"}? Photos that match are linked to people you already named. A face that matches nobody is removed.`
+  );
+  if (!ok) return;
+  els.reindexFace.disabled = true;
+  api(`/api/faces/${person.id}/reindex`, { method: "POST" })
+    .then((job) => {
+      state.jobId = job.id;
+      state.paused = false;
+      state.scanGeneration += 1;
+      showIndexing(job);
+      return pollJob(job.id, state.scanGeneration);
+    })
+    .catch((err) => {
+      showIndexing(null);
+      alert(err.message);
+    })
+    .finally(() => {
+      els.reindexFace.disabled = false;
     });
 });
 els.pause.addEventListener("click", async () => {

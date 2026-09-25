@@ -15,7 +15,7 @@ from app.faces import attach_boxes, merge_clusters, set_avatar
 from app.fs import list_folders
 from app.images import scan_details
 from app.paths import face_dir, thumb_dir, web_dir
-from app.scanner import active_job, cancel_job, get_job, pause_job, resume_job, start_scan
+from app.scanner import active_job, cancel_job, get_job, pause_job, resume_job, start_face_reindex, start_scan
 from app.settings import load_settings, save_settings
 
 WEB_DIR = web_dir()
@@ -243,6 +243,18 @@ def faces(root: str | None = None) -> dict:
         return {"faces": db.list_face_clusters(conn, root)}
     finally:
         conn.close()
+
+
+@app.post("/api/faces/{cluster_id}/reindex")
+def reindex_face(cluster_id: int) -> dict:
+    try:
+        return start_face_reindex(cluster_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.put("/api/faces/{cluster_id}/favorite")

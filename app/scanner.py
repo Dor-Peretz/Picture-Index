@@ -245,6 +245,96 @@ def _job_errors(job_id: str) -> list:
     return list(job.get("errors") or [])
 
 
+def _reindex_face(job_id: str, cluster_id: int, photos: list[tuple[int, str]]) -> None:
+    from app.faces import detect_faces, replace_unnamed_face
+    from app.paths import face_dir, thumb_dir
+
+    try:
+        _update_job(job_id, status="running", stage="Indexing this face", total=len(photos))
+        for index, (photo_id, filename) in enumerate(photos, start=1):
+            _wait_if_paused(job_id)
+            if _job_flag(job_id, "cancelled"):
+                _update_job(job_id, status="cancelled", stage="Cancelled")
+                return
+            _update_job(job_id, stage=filename, done=index - 1)
+            thumb = thumb_dir() / f"{photo_id}.jpg"
+            found = detect_faces(thumb) if thumb.is_file() else []
+            conn = db.get_connection()
+            try:
+                replace_unnamed_face(conn, photo_id, cluster_id, found)
+                conn.commit()
+            finally:
+                conn.close()
+        conn = db.get_connection()
+        try:
+            left = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+        finally:
+            conn.close()
+        if left is None:
+            (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+        _update_job(job_id, status="done", stage="Done", done=len(photos))
+    except Exception as exc:
+        _update_job(job_id, status="error", stage=str(exc))
+
+
+def start_face_reindex(cluster_id: int) -> dict[str, Any]:
+    if not _scan_lock.acquire(blocking=False):
+        raise RuntimeError("A scan is already running")
+    conn = db.get_connection()
+    try:
+        row = conn.execute("SELECT label FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if row is None:
+            raise KeyError("Face not found")
+        if (row["label"] or "").strip():
+            raise ValueError("This person already has a name")
+        photos = [
+            (int(item["id"]), item["filename"])
+            for item in conn.execute(
+                """
+                SELECT DISTINCT photos.id, photos.filename
+                FROM photos
+                JOIN faces ON faces.photo_id = photos.id
+                WHERE faces.cluster_id = ?
+                ORDER BY photos.id
+                """,
+                (cluster_id,),
+            )
+        ]
+    except Exception:
+        _scan_lock.release()
+        raise
+    finally:
+        conn.close()
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "stage": "Indexing this face",
+        "total": len(photos),
+        "done": 0,
+        "indexed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "removed": 0,
+        "offline": 0,
+        "errors": [],
+        "paused": False,
+        "cancelled": False,
+        "folder": "",
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+
+    def runner() -> None:
+        try:
+            _reindex_face(job_id, cluster_id, photos)
+        finally:
+            _scan_lock.release()
+
+    threading.Thread(target=runner, daemon=True).start()
+    return dict(job)
+
+
 def start_scan(folder: str | None = None, *, recursive: bool | None = None, force: bool = False) -> dict[str, Any]:
     if not _scan_lock.acquire(blocking=False):
         raise RuntimeError("A scan is already running")
