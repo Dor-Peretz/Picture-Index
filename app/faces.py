@@ -84,7 +84,19 @@ def detect_faces(image_path: Path) -> list[dict]:
         aligned = recognizer.alignCrop(image, box)
         feature = recognizer.feature(aligned)
         embedding = np.asarray(feature, dtype=np.float32).reshape(-1)
-        faces.append({"embedding": embedding, "crop": _crop(image, box)})
+        x, y, w, h = [float(value) for value in box[:4]]
+        faces.append(
+            {
+                "embedding": embedding,
+                "crop": _crop(image, box),
+                "box": (
+                    max(0.0, x / width),
+                    max(0.0, y / height),
+                    max(0.01, w / width),
+                    max(0.01, h / height),
+                ),
+            }
+        )
     return faces
 
 
@@ -149,9 +161,45 @@ def index_photo_faces(conn, photo_id: int, image_path: Path) -> int:
     for face in found:
         cluster_id = assign_cluster(conn, face["embedding"], face["crop"])
         conn.execute(
-            "INSERT INTO faces (photo_id, cluster_id) VALUES (?, ?)",
-            (photo_id, cluster_id),
+            "INSERT INTO faces (photo_id, cluster_id, x, y, w, h) VALUES (?, ?, ?, ?, ?, ?)",
+            (photo_id, cluster_id, *face["box"]),
         )
     db.mark_faces_done(conn, photo_id)
     conn.commit()
     return len(found)
+
+
+def attach_boxes(conn, photo_id: int, image_path: Path) -> None:
+    from app import db
+
+    rows = conn.execute(
+        """
+        SELECT faces.id, face_clusters.centroid
+        FROM faces
+        JOIN face_clusters ON face_clusters.id = faces.cluster_id
+        WHERE faces.photo_id = ? AND faces.x IS NULL
+        ORDER BY faces.id
+        """,
+        (photo_id,),
+    ).fetchall()
+    if not rows or not image_path.is_file():
+        return
+    found = detect_faces(image_path)
+    unused = set(range(len(found)))
+    for row in rows:
+        centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        best_index = None
+        best_score = -1.0
+        for index in unused:
+            score = _cosine(found[index]["embedding"], centroid)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index is None:
+            continue
+        unused.remove(best_index)
+        conn.execute(
+            "UPDATE faces SET x = ?, y = ?, w = ?, h = ? WHERE id = ?",
+            (*found[best_index]["box"], int(row["id"])),
+        )
+    conn.commit()

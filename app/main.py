@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import db
-from app.faces import merge_clusters
+from app.faces import attach_boxes, merge_clusters
 from app.fs import list_folders
 from app.images import scan_details
 from app.paths import face_dir, thumb_dir, web_dir
@@ -33,6 +33,10 @@ class ScanRequest(BaseModel):
 class SettingsUpdate(BaseModel):
     folder: str | None = None
     scan_subfolders: bool | None = None
+
+
+class FaceAssign(BaseModel):
+    cluster_id: int
 
 
 class FaceRename(BaseModel):
@@ -186,6 +190,10 @@ def photo(photo_id: int) -> dict:
         if row is None:
             raise HTTPException(status_code=404, detail="Photo not found")
         item = dict(row)
+        try:
+            attach_boxes(conn, photo_id, thumb_dir() / f"{photo_id}.jpg")
+        except Exception:
+            pass
         item["faces"] = db.faces_for_photo(conn, photo_id)
     finally:
         conn.close()
@@ -266,6 +274,38 @@ def remove_photo(photo_id: int) -> dict:
     (thumb_dir() / f"{photo_id}.jpg").unlink(missing_ok=True)
     for cluster_id in removed_clusters:
         (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.delete("/api/photos/{photo_id}/faces/{face_id}")
+def remove_photo_face(photo_id: int, face_id: int) -> dict:
+    conn = db.get_connection()
+    try:
+        try:
+            removed = db.remove_face_detection(conn, photo_id, face_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        conn.commit()
+    finally:
+        conn.close()
+    if removed:
+        (face_dir() / f"{removed}.jpg").unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.put("/api/photos/{photo_id}/faces/{face_id}")
+def reassign_photo_face(photo_id: int, face_id: int, body: FaceAssign) -> dict:
+    conn = db.get_connection()
+    try:
+        try:
+            removed = db.reassign_face_detection(conn, photo_id, face_id, body.cluster_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        conn.commit()
+    finally:
+        conn.close()
+    if removed:
+        (face_dir() / f"{removed}.jpg").unlink(missing_ok=True)
     return {"ok": True}
 
 

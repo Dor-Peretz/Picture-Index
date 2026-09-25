@@ -84,6 +84,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE photos ADD COLUMN longitude REAL")
         if "gps_done" not in columns:
             conn.execute("ALTER TABLE photos ADD COLUMN gps_done INTEGER NOT NULL DEFAULT 0")
+        face_columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
+        for column in ("x", "y", "w", "h"):
+            if column not in face_columns:
+                conn.execute(f"ALTER TABLE faces ADD COLUMN {column} REAL")
         conn.commit()
     finally:
         conn.close()
@@ -155,15 +159,68 @@ def clear_faces(conn: sqlite3.Connection, photo_id: int) -> None:
 def faces_for_photo(conn: sqlite3.Connection, photo_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT DISTINCT face_clusters.id, face_clusters.label
+        SELECT faces.id, faces.cluster_id, faces.x, faces.y, faces.w, faces.h, face_clusters.label
         FROM faces
         JOIN face_clusters ON face_clusters.id = faces.cluster_id
         WHERE faces.photo_id = ?
-        ORDER BY face_clusters.label, face_clusters.id
+        ORDER BY faces.id
         """,
         (photo_id,),
     ).fetchall()
-    return [{"id": int(row["id"]), "label": row["label"] or ""} for row in rows]
+    return [
+        {
+            "id": int(row["id"]),
+            "cluster_id": int(row["cluster_id"]),
+            "label": row["label"] or "",
+            "x": row["x"],
+            "y": row["y"],
+            "w": row["w"],
+            "h": row["h"],
+        }
+        for row in rows
+    ]
+
+
+def _cluster_count(conn: sqlite3.Connection, cluster_id: int) -> int:
+    row = conn.execute("SELECT COUNT(*) AS n FROM faces WHERE cluster_id = ?", (cluster_id,)).fetchone()
+    return int(row["n"])
+
+
+def _drop_cluster_if_empty(conn: sqlite3.Connection, cluster_id: int) -> int | None:
+    left = _cluster_count(conn, cluster_id)
+    if left == 0:
+        conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+        return cluster_id
+    conn.execute("UPDATE face_clusters SET count = ? WHERE id = ?", (left, cluster_id))
+    return None
+
+
+def remove_face_detection(conn: sqlite3.Connection, photo_id: int, face_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT cluster_id FROM faces WHERE id = ? AND photo_id = ?",
+        (face_id, photo_id),
+    ).fetchone()
+    if row is None:
+        raise KeyError("Face not found")
+    cluster_id = int(row["cluster_id"])
+    conn.execute("DELETE FROM faces WHERE id = ?", (face_id,))
+    return _drop_cluster_if_empty(conn, cluster_id)
+
+
+def reassign_face_detection(conn: sqlite3.Connection, photo_id: int, face_id: int, cluster_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT cluster_id FROM faces WHERE id = ? AND photo_id = ?",
+        (face_id, photo_id),
+    ).fetchone()
+    target = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+    if row is None or target is None:
+        raise KeyError("Face not found")
+    previous = int(row["cluster_id"])
+    if previous == cluster_id:
+        return None
+    conn.execute("UPDATE faces SET cluster_id = ? WHERE id = ?", (cluster_id, face_id))
+    _drop_cluster_if_empty(conn, cluster_id)
+    return _drop_cluster_if_empty(conn, previous)
 
 
 def delete_face_cluster(conn: sqlite3.Connection, cluster_id: int) -> bool:

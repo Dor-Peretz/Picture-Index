@@ -48,6 +48,8 @@ const state = {
   activePlace: null,
   total: 0,
   selectedId: null,
+  markedFace: null,
+  detail: null,
   faceId: null,
   jobId: null,
   scanGeneration: 0,
@@ -461,6 +463,8 @@ function renderDetail(photo) {
   document.body.classList.toggle("has-photo", Boolean(photo));
   els.remove.classList.toggle("hidden", !photo);
   if (!photo) {
+    state.detail = null;
+    state.markedFace = null;
     els.detail.innerHTML = `<p class="muted">Select a photo to see what is in it and open the file.</p>`;
     return;
   }
@@ -472,18 +476,43 @@ function renderDetail(photo) {
         .map(
           (face) => `
           <span class="named-face">
-            <img src="/api/faces/${face.id}/thumb" alt="" />
+            <img src="/api/faces/${face.cluster_id}/thumb" alt="" />
             <span>${escapeHtml(face.label || "Unnamed")}</span>
-            <button type="button" class="btn ghost danger face-remove" data-face="${face.id}">Remove</button>
           </span>`
         )
         .join("")}</div>`
     : photo.faces_done
       ? "No faces found"
       : "Not scanned for faces yet";
+  const marks = faces
+    .filter((face) => face.x != null)
+    .map((face) => {
+      const selected = state.markedFace === face.id ? " selected" : "";
+      return `<button type="button" class="face-mark${selected}" data-mark="${face.id}" style="left:${face.x * 100}%;top:${face.y * 100}%;width:${Math.max(face.w, 0.04) * 100}%;height:${Math.max(face.h, 0.04) * 100}%"><span>${escapeHtml(face.label || "Face")}</span></button>`;
+    })
+    .join("");
+  const marked = faces.find((face) => face.id === state.markedFace);
+  const choices = (state.faceList || []).filter((person) => !marked || person.id !== marked.cluster_id);
+  const editor = marked
+    ? `<div class="face-editor">
+        <p>This face is <strong>${escapeHtml(marked.label || "unnamed")}</strong>. Choose who it is, or remove it from this photo.</p>
+        <label class="field"><span>This is</span>
+          <select id="reassign-face">${choices.map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`).join("")}</select>
+        </label>
+        <div class="side-actions">
+          <button type="button" class="btn" id="reassign-btn"${choices.length ? "" : " disabled"}>Assign</button>
+          <button type="button" class="btn ghost danger" id="remove-mark-btn">Remove from this photo</button>
+        </div>
+      </div>`
+    : "";
   const extra = (photo.details || []).map((row) => detailRow(row.label, row.value)).join("");
+  state.detail = photo;
   els.detail.innerHTML = `
-    <img src="/api/photos/${photo.id}/thumb" alt="" />
+    <div class="preview">
+      <img src="/api/photos/${photo.id}/thumb" alt="" />
+      ${marks}
+    </div>
+    ${editor}
     <div class="name">${escapeHtml(photo.filename)}</div>
     <p class="muted">In this photo</p>
     <p class="scene">${escapeHtml(photo.objects || (photo.objects === "" ? "Nothing recognized around the subject." : "Not scanned yet. Index the folder again."))}</p>
@@ -529,9 +558,36 @@ document.getElementById("remove-face-btn").addEventListener("click", () => {
   if (state.faceId) removeFace(state.faceId);
 });
 els.detail.addEventListener("click", (event) => {
-  const button = event.target.closest(".face-remove");
-  if (!button) return;
-  removeFace(Number(button.dataset.face));
+  const mark = event.target.closest("[data-mark]");
+  if (mark && state.detail) {
+    state.markedFace = Number(mark.dataset.mark);
+    renderDetail(state.detail);
+    return;
+  }
+  if (event.target.id === "remove-mark-btn" && state.selectedId && state.markedFace) {
+    api(`/api/photos/${state.selectedId}/faces/${state.markedFace}`, { method: "DELETE" })
+      .then(() => {
+        state.markedFace = null;
+        return loadFaces();
+      })
+      .then(() => api(`/api/photos/${state.selectedId}`))
+      .then((photo) => renderDetail(photo))
+      .catch((err) => alert(err.message));
+    return;
+  }
+  if (event.target.id === "reassign-btn" && state.selectedId && state.markedFace) {
+    const select = document.getElementById("reassign-face");
+    if (!select || !select.value) return;
+    api(`/api/photos/${state.selectedId}/faces/${state.markedFace}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cluster_id: Number(select.value) }),
+    })
+      .then(() => loadFaces())
+      .then(() => api(`/api/photos/${state.selectedId}`))
+      .then((photo) => renderDetail(photo))
+      .catch((err) => alert(err.message));
+  }
 });
 els.remove.addEventListener("click", () => {
   const id = state.selectedId;
@@ -564,6 +620,7 @@ function markSelected(id) {
 }
 
 function selectPhoto(id) {
+  if (state.selectedId !== id) state.markedFace = null;
   markSelected(id);
   const known = state.photos.find((item) => item.id === id);
   renderDetail(known || null);
