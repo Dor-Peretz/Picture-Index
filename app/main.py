@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import db
-from app.faces import attach_boxes, merge_clusters
+from app.faces import attach_boxes, merge_clusters, set_avatar
 from app.fs import list_folders
 from app.images import scan_details
 from app.paths import face_dir, thumb_dir, web_dir
@@ -39,8 +39,27 @@ class UnindexRequest(BaseModel):
     ids: list[int] = []
 
 
+class AssignPhotosRequest(BaseModel):
+    ids: list[int] = []
+    cluster_id: int
+
+
+class AvatarUpdate(BaseModel):
+    photo_id: int
+    face_id: int
+
+
 class FaceAssign(BaseModel):
     cluster_id: int
+
+
+class ManualFace(BaseModel):
+    cluster_id: int | None = None
+    label: str = ""
+    x: float
+    y: float
+    w: float
+    h: float
 
 
 class FaceRename(BaseModel):
@@ -255,6 +274,27 @@ def remove_face(cluster_id: int) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/faces/{cluster_id}/avatar")
+def face_avatar(cluster_id: int, body: AvatarUpdate) -> dict:
+    conn = db.get_connection()
+    try:
+        cluster = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+        row = conn.execute(
+            "SELECT x, y, w, h FROM faces WHERE id = ? AND photo_id = ? AND cluster_id = ?",
+            (body.face_id, body.photo_id, cluster_id),
+        ).fetchone()
+        if cluster is None or row is None or row["x"] is None:
+            raise HTTPException(status_code=404, detail="Face not found")
+        box = (float(row["x"]), float(row["y"]), float(row["w"]), float(row["h"]))
+    finally:
+        conn.close()
+    thumb = thumb_dir() / f"{body.photo_id}.jpg"
+    if not thumb.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    set_avatar(cluster_id, thumb, box)
+    return {"ok": True}
+
+
 @app.get("/api/faces/{cluster_id}/thumb")
 def face_thumb(cluster_id: int) -> FileResponse:
     path = face_dir() / f"{cluster_id}.jpg"
@@ -281,6 +321,25 @@ def remove_photo(photo_id: int) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/photos/assign")
+def assign_photos(body: AssignPhotosRequest) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        return {"ok": True, "assigned": 0}
+    conn = db.get_connection()
+    try:
+        try:
+            assigned, removed_clusters = db.assign_photos(conn, ids, body.cluster_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        conn.commit()
+    finally:
+        conn.close()
+    for cluster_id in removed_clusters:
+        (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True, "assigned": assigned}
+
+
 @app.post("/api/photos/unindex")
 def unindex_photos(body: UnindexRequest) -> dict:
     ids = list(dict.fromkeys(body.ids))
@@ -297,6 +356,38 @@ def unindex_photos(body: UnindexRequest) -> dict:
     for cluster_id in removed_clusters:
         (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
     return {"ok": True, "removed": len(ids)}
+
+
+@app.post("/api/photos/{photo_id}/faces")
+def add_photo_face(photo_id: int, body: ManualFace) -> dict:
+    conn = db.get_connection()
+    try:
+        try:
+            face_id, cluster_id, created = db.add_manual_face(
+                conn,
+                photo_id,
+                body.x,
+                body.y,
+                body.w,
+                body.h,
+                body.cluster_id,
+                body.label,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        conn.commit()
+    finally:
+        conn.close()
+    if created:
+        thumb = thumb_dir() / f"{photo_id}.jpg"
+        if thumb.is_file():
+            try:
+                set_avatar(cluster_id, thumb, (body.x, body.y, body.w, body.h))
+            except Exception:
+                pass
+    return {"ok": True, "id": face_id, "cluster_id": cluster_id}
 
 
 @app.delete("/api/photos/{photo_id}/faces/{face_id}")

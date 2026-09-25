@@ -254,6 +254,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .count { margin: 0; color: var(--secondary); font-weight: 600; }
 .result-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.result-bar select { width: auto; min-width: 180px; }
 .picked-count { color: var(--accent); font-weight: 700; }
 .card { position: relative; }
 .pick {
@@ -299,7 +300,9 @@ html[data-theme="dark"] .card.picked .pick { color: #10233f; }
 
 .grid { padding: 8px 20px 24px; }
 .day { margin-top: 8px; }
-.day h2 { margin: 16px 0 10px; font-size: 16px; font-weight: 700; }
+.day h2 { margin: 16px 0 10px; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.day h2 .day-title { margin-right: 4px; }
+.day h2 .group-select { height: 32px; padding: 0 10px; font-size: 13px; }
 .day h2 span { color: var(--muted); font-weight: 600; }
 .day.active h2 { color: var(--accent); }
 .day-grid {
@@ -346,7 +349,7 @@ html[data-theme="dark"] .btn.danger { color: #ffb4ab; }
 #detail-close { display: none; }
 
 .detail { display: flex; flex-direction: column; gap: 10px; }
-.preview { position: relative; }
+.preview { position: relative; overflow: hidden; border-radius: 14px; }
 .preview img { width: 100%; display: block; border-radius: 14px; }
 .face-mark {
   position: absolute;
@@ -375,6 +378,21 @@ html[data-theme="dark"] .btn.danger { color: #ffb4ab; }
 }
 html[data-theme="dark"] .face-mark span { color: #10233f; }
 .face-mark.selected { border-color: #f5c518; box-shadow: 0 0 0 2px #f5c518; background: rgba(245, 197, 24, 0.25); }
+.face-mark.draft { border-style: dashed; pointer-events: none; }
+.face-menu {
+  position: fixed;
+  z-index: 40;
+  width: min(280px, calc(100vw - 16px));
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24);
+}
+.face-menu p { margin: 0; font-weight: 700; }
+.face-menu .field { min-width: 0; }
 .face-editor { display: flex; flex-direction: column; gap: 8px; }
 .face-editor p { margin: 0; }
 .detail img { width: 100%; border-radius: 14px; background: var(--sidebar); }

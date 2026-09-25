@@ -60,9 +60,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
 
 def get_connection() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 60000")
     return conn
 
 
@@ -84,6 +85,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE photos ADD COLUMN longitude REAL")
         if "gps_done" not in columns:
             conn.execute("ALTER TABLE photos ADD COLUMN gps_done INTEGER NOT NULL DEFAULT 0")
+        if "text" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN text TEXT")
+        if "text_done" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN text_done INTEGER NOT NULL DEFAULT 0")
         face_columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
         for column in ("x", "y", "w", "h"):
             if column not in face_columns:
@@ -219,6 +224,66 @@ def _drop_cluster_if_empty(conn: sqlite3.Connection, cluster_id: int) -> int | N
     return None
 
 
+def add_manual_face(
+    conn: sqlite3.Connection,
+    photo_id: int,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    cluster_id: int | None = None,
+    label: str = "",
+) -> tuple[int, int, bool]:
+    photo = conn.execute("SELECT id FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    if photo is None:
+        raise KeyError("Photo not found")
+    width = min(max(float(w), 0.04), 1.0)
+    height = min(max(float(h), 0.04), 1.0)
+    left = min(max(float(x), 0.0), 1.0 - width)
+    top = min(max(float(y), 0.0), 1.0 - height)
+    created = False
+    name = label.strip()
+    if name:
+        existing = conn.execute(
+            "SELECT id FROM face_clusters WHERE LOWER(label) = LOWER(?) AND TRIM(label) != ''",
+            (name,),
+        ).fetchone()
+        if existing:
+            cluster_id = int(existing["id"])
+        else:
+            cur = conn.execute(
+                "INSERT INTO face_clusters (centroid, count, label) VALUES (?, 0, ?)",
+                (b"\x00" * 512, name),
+            )
+            cluster_id = int(cur.lastrowid)
+            created = True
+    elif cluster_id is None:
+        raise ValueError("Choose a person")
+    else:
+        target = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if target is None:
+            raise KeyError("Face not found")
+    blank = conn.execute(
+        "SELECT id FROM faces WHERE photo_id = ? AND cluster_id = ? AND x IS NULL LIMIT 1",
+        (photo_id, cluster_id),
+    ).fetchone()
+    if blank:
+        face_id = int(blank["id"])
+        conn.execute(
+            "UPDATE faces SET x = ?, y = ?, w = ?, h = ? WHERE id = ?",
+            (left, top, width, height, face_id),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO faces (photo_id, cluster_id, x, y, w, h) VALUES (?, ?, ?, ?, ?, ?)",
+            (photo_id, cluster_id, left, top, width, height),
+        )
+        face_id = int(cur.lastrowid)
+    _drop_cluster_if_empty(conn, int(cluster_id))
+    conn.execute("UPDATE photos SET faces_done = 1 WHERE id = ?", (photo_id,))
+    return face_id, int(cluster_id), created
+
+
 def remove_face_detection(conn: sqlite3.Connection, photo_id: int, face_id: int) -> int | None:
     row = conn.execute(
         "SELECT cluster_id FROM faces WHERE id = ? AND photo_id = ?",
@@ -229,6 +294,66 @@ def remove_face_detection(conn: sqlite3.Connection, photo_id: int, face_id: int)
     cluster_id = int(row["cluster_id"])
     conn.execute("DELETE FROM faces WHERE id = ?", (face_id,))
     return _drop_cluster_if_empty(conn, cluster_id)
+
+
+def assign_photos(conn: sqlite3.Connection, photo_ids: list[int], cluster_id: int) -> tuple[int, list[int]]:
+    target = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+    if target is None:
+        raise KeyError("Face not found")
+    unique = list(dict.fromkeys(int(photo_id) for photo_id in photo_ids))
+    assigned = 0
+    touched = {cluster_id}
+    for start in range(0, len(unique), 400):
+        chunk = unique[start : start + 400]
+        marks = ",".join("?" * len(chunk))
+        existing = [int(row["id"]) for row in conn.execute(f"SELECT id FROM photos WHERE id IN ({marks})", chunk)]
+        if not existing:
+            continue
+        marks = ",".join("?" * len(existing))
+        already = {
+            int(row["photo_id"])
+            for row in conn.execute(
+                f"SELECT photo_id FROM faces WHERE cluster_id = ? AND photo_id IN ({marks})",
+                [cluster_id, *existing],
+            )
+        }
+        pending = [photo_id for photo_id in existing if photo_id not in already]
+        if not pending:
+            continue
+        marks = ",".join("?" * len(pending))
+        counts = {
+            int(row["photo_id"]): int(row["n"])
+            for row in conn.execute(
+                f"SELECT photo_id, COUNT(*) AS n FROM faces WHERE photo_id IN ({marks}) GROUP BY photo_id",
+                pending,
+            )
+        }
+        singles = [photo_id for photo_id in pending if counts.get(photo_id) == 1]
+        extras = [photo_id for photo_id in pending if counts.get(photo_id, 0) != 1]
+        if singles:
+            single_marks = ",".join("?" * len(singles))
+            for row in conn.execute(
+                f"SELECT DISTINCT cluster_id FROM faces WHERE photo_id IN ({single_marks})",
+                singles,
+            ):
+                touched.add(int(row["cluster_id"]))
+            conn.execute(
+                f"UPDATE faces SET cluster_id = ? WHERE photo_id IN ({single_marks})",
+                [cluster_id, *singles],
+            )
+        if extras:
+            conn.executemany(
+                "INSERT INTO faces (photo_id, cluster_id) VALUES (?, ?)",
+                [(photo_id, cluster_id) for photo_id in extras],
+            )
+        conn.execute(f"UPDATE photos SET faces_done = 1 WHERE id IN ({marks})", pending)
+        assigned += len(pending)
+    removed: list[int] = []
+    for cluster in touched:
+        dropped = _drop_cluster_if_empty(conn, cluster)
+        if dropped:
+            removed.append(dropped)
+    return assigned, removed
 
 
 def reassign_face_detection(conn: sqlite3.Connection, photo_id: int, face_id: int, cluster_id: int) -> int | None:
@@ -257,6 +382,13 @@ def delete_face_cluster(conn: sqlite3.Connection, cluster_id: int) -> bool:
 
 def rename_face(conn: sqlite3.Connection, cluster_id: int, label: str) -> None:
     conn.execute("UPDATE face_clusters SET label = ? WHERE id = ?", (label.strip(), cluster_id))
+
+
+def set_text(conn: sqlite3.Connection, photo_id: int, text: str) -> None:
+    conn.execute(
+        "UPDATE photos SET text = ?, text_done = 1 WHERE id = ?",
+        (text, photo_id),
+    )
 
 
 def set_location(conn: sqlite3.Connection, photo_id: int, latitude: float | None, longitude: float | None) -> None:
@@ -382,7 +514,8 @@ def photo_filters(
         for raw in query.split():
             token = "".join(ch for ch in raw if ch.isalnum() or ch in "-_'")
             if token:
-                object_likes.append("LOWER(photos.objects) LIKE ?")
+                object_likes.append("(LOWER(photos.objects) LIKE ? OR LOWER(photos.text) LIKE ?)")
+                object_params.append(f"%{token.lower()}%")
                 object_params.append(f"%{token.lower()}%")
         object_sql = " OR ".join(object_likes) if object_likes else "0"
         where.append(

@@ -33,6 +33,12 @@ const els = {
   remove: document.getElementById("remove-btn"),
   status: document.getElementById("status-count"),
   selectAll: document.getElementById("select-all-btn"),
+  assignPerson: document.getElementById("assign-person"),
+  assignBtn: document.getElementById("assign-btn"),
+  faceMenu: document.getElementById("face-menu"),
+  missedPerson: document.getElementById("missed-person"),
+  missedName: document.getElementById("missed-name"),
+  missedAdd: document.getElementById("missed-add"),
   unindex: document.getElementById("unindex-btn"),
   pickedCount: document.getElementById("picked-count"),
   picker: document.getElementById("picker"),
@@ -53,7 +59,10 @@ const state = {
   selectedId: null,
   picked: new Set(),
   markedFace: null,
+  missedFace: null,
+  detailGeneration: 0,
   shownFaceId: null,
+  avatarVersion: {},
   detail: null,
   faceId: null,
   jobId: null,
@@ -74,14 +83,26 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
-async function api(path, options) {
-  const response = await fetch(path, options);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = data.detail;
-    throw new Error(typeof detail === "string" ? detail : "Request failed");
+async function api(path, options, attempt = 0) {
+  try {
+    const response = await fetch(path, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (attempt < 3 && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        return api(path, options, attempt + 1);
+      }
+      const detail = data.detail;
+      throw new Error(typeof detail === "string" ? detail : `Request failed (${response.status})`);
+    }
+    return data;
+  } catch (err) {
+    if (attempt < 3 && err instanceof TypeError) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      return api(path, options, attempt + 1);
+    }
+    throw err;
   }
-  return data;
 }
 
 function formatBytes(size) {
@@ -179,6 +200,7 @@ async function loadFaces() {
     els.faces.innerHTML = `<span class="muted">Faces appear here after indexing.</span>`;
     els.faceActions.classList.add("hidden");
     els.faceMerge.classList.add("hidden");
+    fillAssignPeople();
     return;
   }
   state.faceList = data.faces;
@@ -187,7 +209,7 @@ async function loadFaces() {
       (face) => `
       <div class="face-card">
         <button type="button" class="face${face.id === state.faceId ? " selected" : ""}" draggable="true" data-face="${face.id}" title="${escapeHtml(face.label || "Unnamed")} · ${face.count} photos. Drag onto another face to merge.">
-          <img draggable="false" src="/api/faces/${face.id}/thumb" alt="" />
+          <img draggable="false" src="${faceSrc(face.id)}" alt="" />
         </button>
         <input class="face-name" data-face="${face.id}" value="${escapeHtml(face.label)}" placeholder="Name" />
       </div>`
@@ -205,6 +227,26 @@ async function loadFaces() {
     .join("")}`;
   els.personFilter.value = data.faces.some((face) => String(face.id) === selectedPerson) ? selectedPerson : "";
   if (state.shownFaceId) highlightPerson(state.shownFaceId, false);
+  fillAssignPeople();
+}
+
+function fillAssignPeople() {
+  const people = state.faceList || [];
+  const current = els.assignPerson.value;
+  els.assignPerson.innerHTML = people
+    .map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`)
+    .join("");
+  const preferred = people.some((person) => String(person.id) === current)
+    ? current
+    : state.faceId && people.some((person) => person.id === state.faceId)
+      ? String(state.faceId)
+      : "";
+  if (preferred) els.assignPerson.value = preferred;
+}
+
+function faceSrc(id) {
+  const version = state.avatarVersion[id];
+  return `/api/faces/${id}/thumb${version ? `?v=${version}` : ""}`;
 }
 
 function highlightPerson(clusterId, scroll) {
@@ -226,6 +268,7 @@ async function search(reset) {
     state.photos = [];
     state.activePlace = null;
     state.picked = new Set();
+    state.catalog = null;
   }
   const data = await api(`/api/photos?${queryString()}`);
   state.total = data.total;
@@ -435,7 +478,11 @@ function renderGrid() {
     .map(
       (group, index) => `
       <section class="day${locationMode && state.activePlace === index && group.center ? " active" : ""}" id="place-${index}">
-        <h2>${escapeHtml(locationMode ? placeLabel(group) : group.key === "No date" ? "No date" : dayLabel(group.key))} <span>${group.photos.length}</span></h2>
+        <h2>
+          <span class="day-title">${escapeHtml(locationMode ? placeLabel(group) : group.key === "No date" ? "No date" : dayLabel(group.key))}</span>
+          <span>${group.photos.length}</span>
+          <button type="button" class="btn ghost group-select" data-group-index="${index}" data-group-key="${escapeHtml(group.key)}">${group.photos.length && group.photos.every((photo) => state.picked.has(photo.id)) ? "Clear" : "Select all"}</button>
+        </h2>
         <div class="day-grid">
           ${group.photos
             .map(
@@ -462,6 +509,9 @@ function syncPicked() {
   const count = state.picked.size;
   els.pickedCount.textContent = count ? `${count} selected` : "";
   els.pickedCount.classList.toggle("hidden", !count);
+  const canAssign = count > 0 && (state.faceList || []).length > 0;
+  els.assignPerson.classList.toggle("hidden", !canAssign);
+  els.assignBtn.classList.toggle("hidden", !canAssign);
   els.unindex.classList.toggle("hidden", !count);
   els.unindex.textContent = count ? `Unindex ${count}` : "Unindex";
   els.selectAll.textContent = state.total > 0 && count >= state.total ? "Clear selection" : "Select all";
@@ -482,6 +532,31 @@ async function selectAllPhotos() {
   } finally {
     els.selectAll.disabled = false;
     syncPicked();
+  }
+}
+
+async function selectGroup(button) {
+  const key = button.dataset.groupKey;
+  const index = Number(button.dataset.groupIndex);
+  button.disabled = true;
+  try {
+    let ids = [];
+    if (els.groupBy.value === "location") {
+      ids = (state.locationGroups?.[index]?.photos || []).map((photo) => photo.id);
+    } else {
+      if (!state.catalog) {
+        const data = await api(`/api/locations?${filterParams()}`);
+        state.catalog = data.items;
+      }
+      ids = state.catalog
+        .filter((photo) => (photo.taken_at ? photo.taken_at.slice(0, 10) : "No date") === key)
+        .map((photo) => photo.id);
+    }
+    const allOn = ids.length > 0 && ids.every((id) => state.picked.has(id));
+    ids.forEach((id) => (allOn ? state.picked.delete(id) : state.picked.add(id)));
+    renderGrid();
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -527,7 +602,7 @@ function renderDetail(photo) {
         .map(
           (face) => `
           <span class="named-face">
-            <img src="/api/faces/${face.cluster_id}/thumb" alt="" />
+            <img src="${faceSrc(face.cluster_id)}" alt="" />
             <span>${escapeHtml(face.label || "Unnamed")}</span>
             <button type="button" class="btn ghost danger face-drop" data-face-row="${face.id}">Remove from this photo</button>
           </span>`
@@ -543,15 +618,26 @@ function renderDetail(photo) {
       return `<button type="button" class="face-mark${selected}" data-mark="${face.id}" style="left:${face.x * 100}%;top:${face.y * 100}%;width:${Math.max(face.w, 0.04) * 100}%;height:${Math.max(face.h, 0.04) * 100}%"><span>${escapeHtml(face.label || "Face")}</span></button>`;
     })
     .join("");
+  const draft = state.missedFace && state.missedFace.photoId === photo.id
+    ? `<div class="face-mark draft" style="left:${state.missedFace.x * 100}%;top:${state.missedFace.y * 100}%;width:${state.missedFace.w * 100}%;height:${state.missedFace.h * 100}%"><span>New face</span></div>`
+    : "";
   const marked = faces.find((face) => face.id === state.markedFace);
   const choices = (state.faceList || []).filter((person) => !marked || person.id !== marked.cluster_id);
+  const nameField = marked && !marked.label
+    ? `<label class="field"><span>Name this face</span>
+         <input id="face-label" type="text" placeholder="Type a name" />
+       </label>
+       <button type="button" class="btn" id="name-face-btn">Save name</button>`
+    : "";
   const editor = marked
     ? `<div class="face-editor">
-        <p>This face is <strong>${escapeHtml(marked.label || "unnamed")}</strong>. Choose who it is, or remove it from this photo.</p>
-        <label class="field"><span>This is</span>
+        <p>This face is <strong>${escapeHtml(marked.label || "not recognized")}</strong>.</p>
+        ${nameField}
+        <label class="field"><span>Or this is</span>
           <select id="reassign-face">${choices.map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`).join("")}</select>
         </label>
         <div class="side-actions">
+          <button type="button" class="btn" id="avatar-btn">Use as avatar</button>
           <button type="button" class="btn" id="reassign-btn"${choices.length ? "" : " disabled"}>Assign</button>
           <button type="button" class="btn ghost danger" id="remove-mark-btn">Remove from this photo</button>
         </div>
@@ -563,9 +649,12 @@ function renderDetail(photo) {
     <div class="preview">
       <img src="/api/photos/${photo.id}/thumb" alt="" />
       ${marks}
+      ${draft}
     </div>
     ${editor}
     <div class="name">${escapeHtml(photo.filename)}</div>
+    <p class="muted">Words in this photo</p>
+    <p class="scene">${escapeHtml(photo.text || (photo.text_done ? "No words found." : "Not scanned yet. Index the folder again."))}</p>
     <p class="muted">In this photo</p>
     <p class="scene">${escapeHtml(photo.objects || (photo.objects === "" ? "Nothing recognized around the subject." : "Not scanned yet. Index the folder again."))}</p>
     <p class="muted">From this scan</p>
@@ -623,7 +712,94 @@ function dropFaceFromPhoto(faceId) {
     .catch((err) => alert(err.message));
 }
 
+els.detail.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.id === "face-label") {
+    event.preventDefault();
+    document.getElementById("name-face-btn")?.click();
+  }
+});
 els.detail.addEventListener("click", (event) => {
+  if (event.target.closest("#avatar-btn")) {
+    const photo = state.detail;
+    const face = (photo?.faces || []).find((item) => item.id === state.markedFace);
+    if (!face || !state.selectedId) return;
+    const button = event.target.closest("#avatar-btn");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    api(`/api/faces/${face.cluster_id}/avatar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ photo_id: state.selectedId, face_id: face.id }),
+    })
+      .then(() => {
+        state.avatarVersion[face.cluster_id] = Date.now();
+        return loadFaces();
+      })
+      .then(() => {
+        renderDetail(state.detail);
+        highlightPerson(face.cluster_id, false);
+      })
+      .catch((err) => alert(err.message));
+    return;
+  }
+  if (event.target.closest("#name-face-btn")) {
+    const input = document.getElementById("face-label");
+    const photo = state.detail;
+    const face = (photo?.faces || []).find((item) => item.id === state.markedFace);
+    const label = input ? input.value.trim() : "";
+    if (!face || !label) return;
+    const button = event.target.closest("#name-face-btn");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    const generation = ++state.detailGeneration;
+    const photoId = state.selectedId;
+    api(`/api/faces/${face.cluster_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    })
+      .then(() => loadFaces())
+      .then(() => api(`/api/photos/${photoId}`))
+      .then((updated) => {
+        if (generation !== state.detailGeneration || state.selectedId !== photoId) return;
+        state.markedFace = face.id;
+        renderDetail(updated);
+        highlightPerson(face.cluster_id);
+      })
+      .catch((err) => alert(err.message));
+    return;
+  }
+  if (event.target.closest("#reassign-btn")) {
+    const select = document.getElementById("reassign-face");
+    const faceId = state.markedFace;
+    const photoId = state.selectedId;
+    if (!select || !select.value || !photoId || !faceId) return;
+    const clusterId = Number(select.value);
+    const button = event.target.closest("#reassign-btn");
+    button.disabled = true;
+    button.textContent = "Assigning…";
+    const generation = ++state.detailGeneration;
+    api(`/api/photos/${photoId}/faces/${faceId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cluster_id: clusterId }),
+    })
+      .then(() => loadFaces())
+      .then(() => api(`/api/photos/${photoId}`))
+      .then((photo) => {
+        if (generation !== state.detailGeneration || state.selectedId !== photoId) return;
+        const moved = (photo.faces || []).find((face) => face.id === faceId);
+        state.markedFace = faceId;
+        renderDetail(photo);
+        highlightPerson(moved ? moved.cluster_id : clusterId);
+      })
+      .catch((err) => alert(err.message));
+    return;
+  }
+  if (event.target.closest("#remove-mark-btn")) {
+    dropFaceFromPhoto(state.markedFace);
+    return;
+  }
   const drop = event.target.closest(".face-drop");
   if (drop) {
     dropFaceFromPhoto(Number(drop.dataset.faceRow));
@@ -635,24 +811,6 @@ els.detail.addEventListener("click", (event) => {
     const face = (state.detail.faces || []).find((item) => item.id === state.markedFace);
     renderDetail(state.detail);
     highlightPerson(face ? face.cluster_id : null);
-    return;
-  }
-  if (event.target.id === "remove-mark-btn") {
-    dropFaceFromPhoto(state.markedFace);
-    return;
-  }
-  if (event.target.id === "reassign-btn" && state.selectedId && state.markedFace) {
-    const select = document.getElementById("reassign-face");
-    if (!select || !select.value) return;
-    api(`/api/photos/${state.selectedId}/faces/${state.markedFace}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cluster_id: Number(select.value) }),
-    })
-      .then(() => loadFaces())
-      .then(() => api(`/api/photos/${state.selectedId}`))
-      .then((photo) => renderDetail(photo))
-      .catch((err) => alert(err.message));
   }
 });
 els.remove.addEventListener("click", () => {
@@ -688,11 +846,13 @@ function markSelected(id) {
 function selectPhoto(id) {
   if (state.selectedId !== id) state.markedFace = null;
   markSelected(id);
-  const known = state.photos.find((item) => item.id === id);
+  const known = state.photos.find((item) => item.id === id) || state.mapPhotos.find((item) => item.id === id);
   renderDetail(known || null);
+  const generation = ++state.detailGeneration;
   api(`/api/photos/${id}`)
     .then((photo) => {
-      if (state.selectedId === id) renderDetail(photo);
+      if (generation !== state.detailGeneration || state.selectedId !== id) return;
+      renderDetail(photo);
     })
     .catch(() => {});
 }
@@ -829,6 +989,34 @@ els.browse.addEventListener("click", () =>
 );
 els.more.addEventListener("click", () => search(false).catch((err) => alert(err.message)));
 els.selectAll.addEventListener("click", () => selectAllPhotos().catch((err) => alert(err.message)));
+els.assignBtn.addEventListener("click", () => {
+  const ids = [...state.picked];
+  const clusterId = Number(els.assignPerson.value);
+  const person = (state.faceList || []).find((item) => item.id === clusterId);
+  if (!ids.length || !person) return;
+  const name = person.label || "Unnamed";
+  const ok = confirm(`Assign ${ids.length} photo${ids.length === 1 ? "" : "s"} to ${name}?`);
+  if (!ok) return;
+  const openId = state.selectedId;
+  els.assignBtn.disabled = true;
+  els.assignBtn.textContent = "Assigning…";
+  api("/api/photos/assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, cluster_id: clusterId }),
+  })
+    .then(async () => {
+      state.picked = new Set();
+      await loadFaces();
+      await search(true);
+      if (openId && state.selectedId === openId) selectPhoto(openId);
+    })
+    .catch((err) => alert(err.message))
+    .finally(() => {
+      els.assignBtn.disabled = false;
+      els.assignBtn.textContent = "Assign to person";
+    });
+});
 els.unindex.addEventListener("click", () => {
   const ids = [...state.picked];
   if (!ids.length) return;
@@ -952,7 +1140,110 @@ els.mergeBtn.addEventListener("click", () => {
     .then(() => search(true))
     .catch((err) => alert(err.message));
 });
+function closeMissedMenu() {
+  const photoId = state.missedFace?.photoId;
+  state.missedFace = null;
+  els.faceMenu.classList.add("hidden");
+  if (photoId && state.detail?.id === photoId) renderDetail(state.detail);
+}
+
+function openMissedMenu(event, img) {
+  event.preventDefault();
+  const card = img.closest(".card");
+  const photoId = card ? Number(card.dataset.id) : state.selectedId;
+  if (!photoId) return;
+  const rect = img.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return;
+  const nx = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  const ny = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+  const w = 0.18;
+  const h = 0.24;
+  state.missedFace = {
+    photoId,
+    x: Math.min(Math.max(0, nx - w / 2), 1 - w),
+    y: Math.min(Math.max(0, ny - h / 2), 1 - h),
+    w,
+    h,
+  };
+  const people = state.faceList || [];
+  els.missedPerson.innerHTML = `<option value="">Choose a person</option>${people
+    .map((person) => `<option value="${person.id}">${escapeHtml(person.label || "Unnamed")} (${person.count})</option>`)
+    .join("")}`;
+  if (state.faceId && people.some((person) => person.id === state.faceId)) {
+    els.missedPerson.value = String(state.faceId);
+  }
+  els.missedName.value = "";
+  els.faceMenu.classList.remove("hidden");
+  const menuWidth = els.faceMenu.offsetWidth || 280;
+  const menuHeight = els.faceMenu.offsetHeight || 220;
+  els.faceMenu.style.left = `${Math.min(event.clientX, window.innerWidth - menuWidth - 8)}px`;
+  els.faceMenu.style.top = `${Math.min(event.clientY, window.innerHeight - menuHeight - 8)}px`;
+  if (state.selectedId !== photoId) selectPhoto(photoId);
+  else if (state.detail?.id === photoId) renderDetail(state.detail);
+}
+
+document.addEventListener("contextmenu", (event) => {
+  if (event.target.closest("#face-menu")) {
+    event.preventDefault();
+    return;
+  }
+  const img = event.target.closest(".card img, .preview img");
+  if (img && !event.target.closest(".face-mark")) {
+    openMissedMenu(event, img);
+    return;
+  }
+  closeMissedMenu();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (els.faceMenu.classList.contains("hidden") || event.target.closest("#face-menu")) return;
+  closeMissedMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMissedMenu();
+});
+els.missedName.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") els.missedAdd.click();
+});
+els.missedAdd.addEventListener("click", () => {
+  const spot = state.missedFace;
+  if (!spot) return;
+  const label = els.missedName.value.trim();
+  const clusterId = Number(els.missedPerson.value);
+  if (!label && !clusterId) {
+    alert("Choose a person or type a name.");
+    return;
+  }
+  const body = { x: spot.x, y: spot.y, w: spot.w, h: spot.h };
+  if (label) body.label = label;
+  else body.cluster_id = clusterId;
+  els.missedAdd.disabled = true;
+  els.missedAdd.textContent = "Adding…";
+  api(`/api/photos/${spot.photoId}/faces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then(async (result) => {
+      const photoId = spot.photoId;
+      state.missedFace = null;
+      els.faceMenu.classList.add("hidden");
+      if (result.cluster_id) state.avatarVersion[result.cluster_id] = Date.now();
+      await loadFaces();
+      selectPhoto(photoId);
+    })
+    .catch((err) => alert(err.message))
+    .finally(() => {
+      els.missedAdd.disabled = false;
+      els.missedAdd.textContent = "Add face";
+    });
+});
 els.grid.addEventListener("click", (event) => {
+  const groupButton = event.target.closest(".group-select");
+  if (groupButton) {
+    event.preventDefault();
+    selectGroup(groupButton).catch((err) => alert(err.message));
+    return;
+  }
   const pick = event.target.closest(".pick");
   if (pick) {
     event.preventDefault();

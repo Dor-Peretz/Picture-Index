@@ -12,6 +12,12 @@ from app.paths import face_dir, model_dir
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 MATCH_THRESHOLD = 0.363
+# YuNet's own score. 0.8 means the detector is 80% sure this is a face.
+MIN_SCORE = 0.8
+# On the 960px preview, a shorter side under 80px is too small to match in other photos.
+MIN_FACE_PX = 80
+# Sharpness of the face after it is scaled to the recognition size. Below this it is too blurred to reuse.
+MIN_SHARPNESS = 80.0
 
 _detector = None
 _recognizer = None
@@ -39,7 +45,7 @@ def _engines():
     global _detector, _recognizer
     if _detector is None or _recognizer is None:
         yunet, sface = ensure_models()
-        _detector = cv2.FaceDetectorYN.create(str(yunet), "", (320, 320), 0.8, 0.3, 5000)
+        _detector = cv2.FaceDetectorYN.create(str(yunet), "", (320, 320), MIN_SCORE, 0.3, 5000)
         _recognizer = cv2.FaceRecognizerSF.create(str(sface), "")
     return _detector, _recognizer
 
@@ -49,6 +55,16 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> float:
     if denom == 0:
         return 0.0
     return float(np.dot(left, right) / denom)
+
+
+def sharpness(face_bgr: np.ndarray) -> float:
+    if face_bgr.size == 0:
+        return 0.0
+    sized = face_bgr
+    if sized.shape[0] != 112 or sized.shape[1] != 112:
+        sized = cv2.resize(sized, (112, 112), interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(sized, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
 def _crop(image: np.ndarray, box: np.ndarray) -> Image.Image:
@@ -81,10 +97,15 @@ def detect_faces(image_path: Path) -> list[dict]:
         return []
     faces = []
     for box in found:
+        score = float(box[14]) if len(box) > 14 else 0.0
+        x, y, w, h = [float(value) for value in box[:4]]
+        if score < MIN_SCORE or min(w, h) < MIN_FACE_PX:
+            continue
         aligned = recognizer.alignCrop(image, box)
+        if sharpness(aligned) < MIN_SHARPNESS:
+            continue
         feature = recognizer.feature(aligned)
         embedding = np.asarray(feature, dtype=np.float32).reshape(-1)
-        x, y, w, h = [float(value) for value in box[:4]]
         faces.append(
             {
                 "embedding": embedding,
@@ -130,6 +151,20 @@ def assign_cluster(conn, embedding: np.ndarray, crop: Image.Image) -> int:
     return best_id
 
 
+def set_avatar(cluster_id: int, image_path: Path, box: tuple[float, float, float, float]) -> None:
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    x, y, box_w, box_h = box
+    pad_x, pad_y = box_w * 0.25, box_h * 0.25
+    left = max(0, int((x - pad_x) * width))
+    top = max(0, int((y - pad_y) * height))
+    right = min(width, int((x + box_w + pad_x) * width))
+    bottom = min(height, int((y + box_h + pad_y) * height))
+    if right <= left or bottom <= top:
+        left, top, right, bottom = 0, 0, width, height
+    image.crop((left, top, right, bottom)).save(face_dir() / f"{cluster_id}.jpg", format="JPEG", quality=85)
+
+
 def merge_clusters(conn, keep_id: int, drop_id: int) -> int:
     if keep_id == drop_id:
         return keep_id
@@ -156,8 +191,8 @@ def merge_clusters(conn, keep_id: int, drop_id: int) -> int:
 def index_photo_faces(conn, photo_id: int, image_path: Path) -> int:
     from app import db
 
-    db.clear_faces(conn, photo_id)
     found = detect_faces(image_path)
+    db.clear_faces(conn, photo_id)
     for face in found:
         cluster_id = assign_cluster(conn, face["embedding"], face["crop"])
         conn.execute(

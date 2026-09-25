@@ -11,6 +11,7 @@ from typing import Any
 
 from app import db
 from app.images import is_image, open_error, read_image, read_location
+from app.ocr import read_words
 from app.paths import thumb_dir
 from app.settings import load_settings, save_settings
 
@@ -118,7 +119,8 @@ def _index_file(conn: Any, path: Path, *, force: bool) -> str:
     existing = db.find_by_path(conn, str(path))
     unchanged = not force and _unchanged(existing, stat.st_size, stat.st_mtime)
     gps_done = bool(existing and int(existing["gps_done"] or 0))
-    if unchanged and int(existing["faces_done"] or 0) and existing["objects"] is not None and gps_done:
+    text_done = bool(existing and int(existing["text_done"] or 0))
+    if unchanged and int(existing["faces_done"] or 0) and existing["objects"] is not None and gps_done and text_done:
         return "skipped"
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     record = {
@@ -165,6 +167,11 @@ def _index_file(conn: Any, path: Path, *, force: bool) -> str:
         if not unchanged or not gps_ready:
             point = read_location(path)
             db.set_location(conn, photo_id, *(point or (None, None)))
+            conn.commit()
+        text_ready = bool(existing and int(existing["text_done"] or 0))
+        if not unchanged or not text_ready:
+            words = read_words(path)
+            db.set_text(conn, photo_id, words)
             conn.commit()
     except Exception as exc:
         if not unchanged:

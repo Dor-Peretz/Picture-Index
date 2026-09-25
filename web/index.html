@@ -41,7 +41,7 @@
         <div class="find">
           <label class="search-field">
             <span>Search</span>
-            <input id="search" type="search" placeholder="Filename, folder, or what is in the photo" />
+            <input id="search" type="search" placeholder="Filename, folder, objects, or words in the photo" />
           </label>
           <div class="people">
             <div class="people-head">
@@ -98,6 +98,8 @@
           <div class="result-bar">
             <p id="status-count" class="count">0 photos</p>
             <button type="button" class="btn ghost" id="select-all-btn">Select all</button>
+            <select id="assign-person" class="hidden" aria-label="Person to assign"></select>
+            <button type="button" class="btn hidden" id="assign-btn">Assign to person</button>
             <button type="button" class="btn ghost danger hidden" id="unindex-btn">Unindex</button>
             <span id="picked-count" class="picked-count hidden"></span>
           </div>
@@ -140,6 +142,18 @@
           <button type="button" class="btn primary" id="picker-choose">Use this folder</button>
         </div>
       </div>
+    </div>
+    <div id="face-menu" class="face-menu hidden" role="dialog" aria-label="Add a missed face">
+      <p>Add the face here</p>
+      <label class="field">
+        <span>This is</span>
+        <select id="missed-person"></select>
+      </label>
+      <label class="field">
+        <span>Or a new name</span>
+        <input id="missed-name" type="text" placeholder="Type a name" />
+      </label>
+      <button type="button" class="btn" id="missed-add">Add face</button>
     </div>
     <script src="/static/app.js"></script>
   </body>
