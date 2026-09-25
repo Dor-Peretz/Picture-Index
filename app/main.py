@@ -66,6 +66,10 @@ class FaceRename(BaseModel):
     label: str = ""
 
 
+class FaceFavorite(BaseModel):
+    favorite: bool = False
+
+
 class FaceMerge(BaseModel):
     keep_id: int
     drop_id: int
@@ -235,6 +239,20 @@ def faces() -> dict:
         return {"faces": db.list_face_clusters(conn)}
     finally:
         conn.close()
+
+
+@app.put("/api/faces/{cluster_id}/favorite")
+def favorite_face(cluster_id: int, body: FaceFavorite) -> dict:
+    conn = db.get_connection()
+    try:
+        try:
+            db.set_favorite(conn, cluster_id, body.favorite)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": cluster_id, "favorite": body.favorite}
 
 
 @app.put("/api/faces/{cluster_id}")

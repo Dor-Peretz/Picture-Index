@@ -208,6 +208,7 @@ async function loadFaces() {
     .map(
       (face) => `
       <div class="face-card">
+        <button type="button" class="face-fav${face.favorite ? " on" : ""}" data-fav="${face.id}" aria-pressed="${face.favorite ? "true" : "false"}" aria-label="${face.favorite ? "Remove from favorites" : "Favorite"}">★</button>
         <button type="button" class="face${face.id === state.faceId ? " selected" : ""}" draggable="true" data-face="${face.id}" title="${escapeHtml(face.label || "Unnamed")} · ${face.count} photos. Drag onto another face to merge.">
           <img draggable="false" src="${faceSrc(face.id)}" alt="" />
         </button>
@@ -1104,6 +1105,25 @@ els.faces.addEventListener("drop", (event) => {
     .catch((err) => alert(err.message));
 });
 els.faces.addEventListener("click", (event) => {
+  const favorite = event.target.closest(".face-fav");
+  if (favorite) {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = Number(favorite.dataset.fav);
+    const person = (state.faceList || []).find((item) => item.id === id);
+    favorite.disabled = true;
+    api(`/api/faces/${id}/favorite`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ favorite: !person?.favorite }),
+    })
+      .then(() => loadFaces())
+      .catch((err) => alert(err.message))
+      .finally(() => {
+        favorite.disabled = false;
+      });
+    return;
+  }
   if (faceDragged) {
     faceDragged = false;
     return;
