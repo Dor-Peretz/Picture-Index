@@ -15,7 +15,7 @@ from app.faces import merge_clusters
 from app.fs import list_folders
 from app.images import scan_details
 from app.paths import face_dir, thumb_dir, web_dir
-from app.scanner import cancel_job, get_job, pause_job, resume_job, start_scan
+from app.scanner import active_job, cancel_job, get_job, pause_job, resume_job, start_scan
 from app.settings import load_settings, save_settings
 
 WEB_DIR = web_dir()
@@ -62,6 +62,7 @@ def status() -> dict:
             "photos": db.photo_count(conn),
             "folder": settings.get("folder") or "",
             "settings": settings,
+            "job": active_job(),
         }
     finally:
         conn.close()
@@ -123,6 +124,30 @@ def folders() -> dict:
     conn = db.get_connection()
     try:
         return {"folders": db.list_folders(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/locations")
+def locations(
+    q: str = "",
+    folder: str = "",
+    taken_from: str = "",
+    taken_to: str = "",
+    face: int | None = None,
+) -> dict:
+    conn = db.get_connection()
+    try:
+        return {
+            "items": db.list_locations(
+                conn,
+                query=q,
+                folder=folder,
+                taken_from=taken_from,
+                taken_to=taken_to,
+                face=face,
+            )
+        }
     finally:
         conn.close()
 

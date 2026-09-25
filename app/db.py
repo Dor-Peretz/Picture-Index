@@ -72,6 +72,14 @@ def init_db() -> None:
         cluster_columns = {row[1] for row in conn.execute("PRAGMA table_info(face_clusters)").fetchall()}
         if cluster_columns and "label" not in cluster_columns:
             conn.execute("ALTER TABLE face_clusters ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+        if "objects" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN objects TEXT")
+        if "latitude" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN latitude REAL")
+        if "longitude" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN longitude REAL")
+        if "gps_done" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN gps_done INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     finally:
         conn.close()
@@ -142,6 +150,17 @@ def faces_for_photo(conn: sqlite3.Connection, photo_id: int) -> list[dict[str, A
 
 def rename_face(conn: sqlite3.Connection, cluster_id: int, label: str) -> None:
     conn.execute("UPDATE face_clusters SET label = ? WHERE id = ?", (label.strip(), cluster_id))
+
+
+def set_location(conn: sqlite3.Connection, photo_id: int, latitude: float | None, longitude: float | None) -> None:
+    conn.execute(
+        "UPDATE photos SET latitude = ?, longitude = ?, gps_done = 1 WHERE id = ?",
+        (latitude, longitude, photo_id),
+    )
+
+
+def set_objects(conn: sqlite3.Connection, photo_id: int, objects: str) -> None:
+    conn.execute("UPDATE photos SET objects = ? WHERE id = ?", (objects, photo_id))
 
 
 def mark_faces_done(conn: sqlite3.Connection, photo_id: int) -> None:
@@ -239,25 +258,31 @@ def fts_query(text: str) -> str | None:
     return " AND ".join(parts)
 
 
-def search_photos(
-    conn: sqlite3.Connection,
+def photo_filters(
     *,
     query: str = "",
     folder: str = "",
     taken_from: str = "",
     taken_to: str = "",
     face: int | None = None,
-    limit: int = 80,
-    offset: int = 0,
-) -> dict[str, Any]:
+) -> tuple[str, list[Any]]:
     where = ["1 = 1"]
     params: list[Any] = []
     match = fts_query(query)
-    join = ""
     if match:
-        join = "JOIN photos_fts ON photos_fts.rowid = photos.id"
-        where.append("photos_fts MATCH ?")
+        object_likes = []
+        object_params: list[Any] = []
+        for raw in query.split():
+            token = "".join(ch for ch in raw if ch.isalnum() or ch in "-_'")
+            if token:
+                object_likes.append("LOWER(photos.objects) LIKE ?")
+                object_params.append(f"%{token.lower()}%")
+        object_sql = " OR ".join(object_likes) if object_likes else "0"
+        where.append(
+            f"(photos.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?) OR {object_sql})"
+        )
         params.append(match)
+        params.extend(object_params)
     if folder:
         where.append("photos.folder = ?")
         params.append(folder)
@@ -270,14 +295,30 @@ def search_photos(
     if face:
         where.append("photos.id IN (SELECT photo_id FROM faces WHERE cluster_id = ?)")
         params.append(face)
-    sql_where = " AND ".join(where)
+    return " AND ".join(where), params
+
+
+def search_photos(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    folder: str = "",
+    taken_from: str = "",
+    taken_to: str = "",
+    face: int | None = None,
+    limit: int = 80,
+    offset: int = 0,
+) -> dict[str, Any]:
+    sql_where, params = photo_filters(
+        query=query, folder=folder, taken_from=taken_from, taken_to=taken_to, face=face
+    )
     total = conn.execute(
-        f"SELECT COUNT(*) AS n FROM photos {join} WHERE {sql_where}",
+        f"SELECT COUNT(*) AS n FROM photos WHERE {sql_where}",
         params,
     ).fetchone()["n"]
     rows = conn.execute(
         f"""
-        SELECT photos.* FROM photos {join}
+        SELECT photos.* FROM photos
         WHERE {sql_where}
         ORDER BY photos.taken_at IS NULL, photos.taken_at DESC, photos.filename
         LIMIT ? OFFSET ?
@@ -285,3 +326,27 @@ def search_photos(
         [*params, limit, offset],
     ).fetchall()
     return {"total": int(total), "items": [dict(row) for row in rows]}
+
+
+def list_locations(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    folder: str = "",
+    taken_from: str = "",
+    taken_to: str = "",
+    face: int | None = None,
+) -> list[dict[str, Any]]:
+    sql_where, params = photo_filters(
+        query=query, folder=folder, taken_from=taken_from, taken_to=taken_to, face=face
+    )
+    rows = conn.execute(
+        f"""
+        SELECT id, filename, taken_at, latitude, longitude
+        FROM photos
+        WHERE {sql_where}
+        ORDER BY taken_at IS NULL, taken_at DESC, filename
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]

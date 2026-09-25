@@ -13,82 +13,119 @@
   <body>
     <header class="titlebar">
       <div class="brand">
-        <img class="brand-logo" src="/static/logo.png" alt="" width="28" height="28" />
+        <img class="brand-logo" src="/static/logo.png" alt="" width="32" height="32" />
         <span>Picture Index</span>
       </div>
-      <div class="folder-control">
+      <label class="folder-control">
+        <span>Folder</span>
         <input id="folder" type="text" placeholder="No folder selected" spellcheck="false" />
-        <button type="button" class="btn" id="browse-btn">Browse</button>
-      </div>
-      <div class="titlebar-actions">
-        <button type="button" class="btn primary" id="index-btn">Index folder</button>
-        <button type="button" class="btn" id="theme-btn" title="Toggle theme">Theme</button>
-      </div>
+        <button type="button" class="btn ghost" id="browse-btn">Change</button>
+      </label>
+      <button type="button" class="btn ghost" id="theme-btn">Theme</button>
+      <button type="button" class="btn primary" id="index-btn">Index folder</button>
     </header>
 
-    <div id="progress" class="progress hidden">
+    <div id="progress" class="progress hidden" role="status" aria-live="polite">
       <div class="progress-row">
-        <span id="progress-title">Indexing</span>
+        <span id="indexing-badge" class="indexing-badge">Indexing</span>
+        <span id="progress-title">Finding photos</span>
         <span id="progress-count"></span>
-        <button type="button" class="btn small" id="pause-btn">Pause</button>
-        <button type="button" class="btn small" id="cancel-btn">Cancel</button>
+        <button type="button" class="btn ghost" id="pause-btn">Pause</button>
+        <button type="button" class="btn ghost" id="cancel-btn">Cancel</button>
       </div>
       <div class="bar"><div id="bar-fill"></div></div>
     </div>
 
     <main class="workspace">
       <section class="grid-wrap">
+        <div class="find">
+          <label class="search-field">
+            <span>Search</span>
+            <input id="search" type="search" placeholder="Filename, folder, or what is in the photo" />
+          </label>
+          <div class="people">
+            <div class="people-head">
+              <span>People</span>
+              <span class="hint">Select a person to filter. Drag one face onto another to merge them.</span>
+            </div>
+            <div id="faces" class="faces"></div>
+            <div id="face-merge" class="face-merge hidden">
+              <span>Same person as</span>
+              <select id="merge-with" aria-label="Person to merge with"></select>
+              <button type="button" class="btn" id="merge-btn">Merge</button>
+            </div>
+          </div>
+          <div class="filters">
+            <div class="segment" role="group" aria-label="Group photos">
+              <span>Group</span>
+              <button type="button" class="segment-btn is-on" data-group="date" aria-pressed="true">Date taken</button>
+              <button type="button" class="segment-btn" data-group="location" aria-pressed="false">Location</button>
+              <select id="group-by" class="sr-only" tabindex="-1" aria-hidden="true">
+                <option value="date">Date taken</option>
+                <option value="location">Location</option>
+              </select>
+            </div>
+            <label class="field hidden" id="radius-field">
+              <span>Radius</span>
+              <select id="radius">
+                <option value="100">100 m</option>
+                <option value="500" selected>500 m</option>
+                <option value="1000">1 km</option>
+                <option value="5000">5 km</option>
+                <option value="25000">25 km</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Person</span>
+              <select id="person-filter"><option value="">All people</option></select>
+            </label>
+            <label class="field">
+              <span>Folder</span>
+              <select id="folder-filter"><option value="">All folders</option></select>
+            </label>
+            <label class="field">
+              <span>From</span>
+              <input id="taken-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To</span>
+              <input id="taken-to" type="date" />
+            </label>
+          </div>
+          <p id="status-count" class="count">0 photos</p>
+        </div>
+        <div id="heatmap" class="heatmap hidden">
+          <canvas id="heatmap-canvas" aria-label="Heat map of where photos were taken"></canvas>
+          <p id="heatmap-note" class="heatmap-note hidden"></p>
+        </div>
         <div id="grid" class="grid"></div>
-        <div id="empty" class="empty">Choose a folder of photos and index it. Search works on the filename, the folder, and the date the photo was taken.</div>
+        <div id="empty" class="empty">
+          <h2>No photos yet</h2>
+          <p>Choose a folder, then press <strong>Index folder</strong>. After that, search by filename, folder, person, or what is in the photo.</p>
+        </div>
         <button type="button" class="btn more hidden" id="more-btn">Load more</button>
       </section>
       <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Resize preview"></div>
       <aside class="side">
-        <label class="field">
-          <span>Search</span>
-          <input id="search" type="search" placeholder="Filename or folder" />
-        </label>
-        <div class="field">
-          <span>Faces</span>
-          <div id="faces" class="faces"></div>
-          <div id="face-merge" class="face-merge hidden">
-            <span>Same person as</span>
-            <select id="merge-with"></select>
-            <button type="button" class="btn small" id="merge-btn">Merge</button>
-          </div>
-        </div>
-        <label class="field">
-          <span>Folder</span>
-          <select id="folder-filter"><option value="">All folders</option></select>
-        </label>
-        <div class="field-row">
-          <label class="field">
-            <span>From</span>
-            <input id="taken-from" type="date" />
-          </label>
-          <label class="field">
-            <span>To</span>
-            <input id="taken-to" type="date" />
-          </label>
+        <div class="side-head">
+          <h2>Selected photo</h2>
+          <button type="button" class="btn ghost" id="detail-close">Close</button>
         </div>
         <div id="detail" class="detail">
-          <p class="muted">Select a photo.</p>
+          <p class="muted">Select a photo to see what is in it and open the file.</p>
         </div>
       </aside>
     </main>
 
-    <footer class="statusbar">
-      <span id="status-count">0 photos</span>
-    </footer>
-
     <div id="picker" class="modal hidden">
-      <div class="dialog" role="dialog" aria-label="Choose folder">
-        <input id="picker-path" type="text" spellcheck="false" />
+      <div class="dialog" role="dialog" aria-labelledby="picker-title">
+        <h2 id="picker-title">Choose a folder</h2>
+        <input id="picker-path" type="text" spellcheck="false" aria-label="Folder path" />
         <div id="picker-list" class="folder-list"></div>
         <div class="dialog-actions">
-          <button type="button" class="btn" id="picker-back">Back</button>
-          <button type="button" class="btn" id="picker-up">Up</button>
-          <button type="button" class="btn" id="picker-cancel">Cancel</button>
+          <button type="button" class="btn ghost" id="picker-back">Back</button>
+          <button type="button" class="btn ghost" id="picker-up">Up</button>
+          <button type="button" class="btn ghost" id="picker-cancel">Cancel</button>
           <button type="button" class="btn primary" id="picker-choose">Use this folder</button>
         </div>
       </div>

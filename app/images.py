@@ -38,6 +38,20 @@ def _exif_datetime(image: Image.Image) -> str | None:
     return None
 
 
+def read_location(path: Path) -> tuple[float, float] | None:
+    with Image.open(path) as image:
+        image.seek(0)
+        try:
+            exif = image.getexif()
+        except Exception:
+            return None
+        text = _gps_degrees(exif) if exif else None
+    if not text:
+        return None
+    latitude, longitude = text.split(",")
+    return float(latitude), float(longitude.strip())
+
+
 def read_image(path: Path, thumb_path: Path) -> dict:
     with Image.open(path) as image:
         image.seek(0)

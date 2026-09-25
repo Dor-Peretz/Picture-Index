@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app import db
-from app.images import is_image, open_error, read_image
+from app.images import is_image, open_error, read_image, read_location
 from app.paths import thumb_dir
 from app.settings import load_settings, save_settings
 
@@ -23,6 +23,14 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job else None
+
+
+def active_job() -> dict[str, Any] | None:
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job.get("status") in {"queued", "running", "paused"}:
+                return dict(job)
+    return None
 
 
 def _update_job(job_id: str, **changes: Any) -> None:
@@ -107,7 +115,8 @@ def _index_file(conn: Any, path: Path, *, force: bool) -> str:
     stat = path.stat()
     existing = db.find_by_path(conn, str(path))
     unchanged = not force and _unchanged(existing, stat.st_size, stat.st_mtime)
-    if unchanged and int(existing["faces_done"] or 0):
+    gps_done = bool(existing and int(existing["gps_done"] or 0))
+    if unchanged and int(existing["faces_done"] or 0) and existing["objects"] is not None and gps_done:
         return "skipped"
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     record = {
@@ -141,8 +150,20 @@ def _index_file(conn: Any, path: Path, *, force: bool) -> str:
             photo_id = db.upsert_photo(conn, record)
             conn.commit()
         from app.faces import index_photo_faces
+        from app.scene import detect_scene
 
-        index_photo_faces(conn, photo_id, thumb)
+        faces_done = bool(existing and int(existing["faces_done"] or 0))
+        objects_ready = bool(existing and existing["objects"] is not None)
+        gps_ready = bool(existing and int(existing["gps_done"] or 0))
+        if not unchanged or not faces_done:
+            index_photo_faces(conn, photo_id, thumb)
+        if not unchanged or not objects_ready:
+            db.set_objects(conn, photo_id, detect_scene(thumb))
+            conn.commit()
+        if not unchanged or not gps_ready:
+            point = read_location(path)
+            db.set_location(conn, photo_id, *(point or (None, None)))
+            conn.commit()
     except Exception as exc:
         if not unchanged:
             record["error"] = open_error(exc)
