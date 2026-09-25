@@ -230,12 +230,43 @@ def merge_faces(body: FaceMerge) -> dict:
     return {"id": keep_id}
 
 
+@app.delete("/api/faces/{cluster_id}")
+def remove_face(cluster_id: int) -> dict:
+    conn = db.get_connection()
+    try:
+        if not db.delete_face_cluster(conn, cluster_id):
+            raise HTTPException(status_code=404, detail="Face not found")
+        conn.commit()
+    finally:
+        conn.close()
+    (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True}
+
+
 @app.get("/api/faces/{cluster_id}/thumb")
 def face_thumb(cluster_id: int) -> FileResponse:
     path = face_dir() / f"{cluster_id}.jpg"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Face not found")
     return FileResponse(path, media_type="image/jpeg")
+
+
+@app.delete("/api/photos/{photo_id}")
+def remove_photo(photo_id: int) -> dict:
+    conn = db.get_connection()
+    try:
+        row = db.get_photo(conn, photo_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        db.exclude_path(conn, row["path"])
+        removed_clusters = db.delete_photo(conn, photo_id)
+        conn.commit()
+    finally:
+        conn.close()
+    (thumb_dir() / f"{photo_id}.jpg").unlink(missing_ok=True)
+    for cluster_id in removed_clusters:
+        (face_dir() / f"{cluster_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/api/photos/{photo_id}/thumb")

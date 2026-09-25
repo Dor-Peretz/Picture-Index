@@ -49,10 +49,13 @@
               <span class="hint">Select a person to filter. Drag one face onto another to merge them.</span>
             </div>
             <div id="faces" class="faces"></div>
-            <div id="face-merge" class="face-merge hidden">
-              <span>Same person as</span>
-              <select id="merge-with" aria-label="Person to merge with"></select>
-              <button type="button" class="btn" id="merge-btn">Merge</button>
+            <div id="face-actions" class="face-actions hidden">
+              <button type="button" class="btn ghost danger" id="remove-face-btn">Remove face</button>
+              <div id="face-merge" class="face-merge hidden">
+                <span>Same person as</span>
+                <select id="merge-with" aria-label="Person to merge with"></select>
+                <button type="button" class="btn" id="merge-btn">Merge</button>
+              </div>
             </div>
           </div>
           <div class="filters">
@@ -109,7 +112,10 @@
       <aside class="side">
         <div class="side-head">
           <h2>Selected photo</h2>
-          <button type="button" class="btn ghost" id="detail-close">Close</button>
+          <div class="side-actions">
+            <button type="button" class="btn ghost danger hidden" id="remove-btn">Remove from index</button>
+            <button type="button" class="btn ghost" id="detail-close">Close</button>
+          </div>
         </div>
         <div id="detail" class="detail">
           <p class="muted">Select a photo to see what is in it and open the file.</p>

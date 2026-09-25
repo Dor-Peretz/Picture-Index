@@ -112,6 +112,8 @@ def _unchanged(existing: Any, size: int, mtime: float) -> bool:
 
 
 def _index_file(conn: Any, path: Path, *, force: bool) -> str:
+    if db.is_excluded(conn, str(path)):
+        return "skipped"
     stat = path.stat()
     existing = db.find_by_path(conn, str(path))
     unchanged = not force and _unchanged(existing, stat.st_size, stat.st_mtime)

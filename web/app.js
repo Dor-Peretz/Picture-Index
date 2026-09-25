@@ -18,6 +18,7 @@ const els = {
   more: document.getElementById("more-btn"),
   search: document.getElementById("search"),
   faces: document.getElementById("faces"),
+  faceActions: document.getElementById("face-actions"),
   faceMerge: document.getElementById("face-merge"),
   mergeWith: document.getElementById("merge-with"),
   mergeBtn: document.getElementById("merge-btn"),
@@ -29,6 +30,7 @@ const els = {
   takenFrom: document.getElementById("taken-from"),
   takenTo: document.getElementById("taken-to"),
   detail: document.getElementById("detail"),
+  remove: document.getElementById("remove-btn"),
   status: document.getElementById("status-count"),
   picker: document.getElementById("picker"),
   pickerPath: document.getElementById("picker-path"),
@@ -168,6 +170,7 @@ async function loadFaces() {
   if (!data.faces.length) {
     state.faceList = [];
     els.faces.innerHTML = `<span class="muted">Faces appear here after indexing.</span>`;
+    els.faceActions.classList.add("hidden");
     els.faceMerge.classList.add("hidden");
     return;
   }
@@ -184,6 +187,7 @@ async function loadFaces() {
     )
     .join("");
   const others = data.faces.filter((face) => face.id !== state.faceId);
+  els.faceActions.classList.toggle("hidden", !state.faceId);
   els.faceMerge.classList.toggle("hidden", !state.faceId || others.length === 0);
   els.mergeWith.innerHTML = others
     .map((face) => `<option value="${face.id}">${escapeHtml(face.label || "Unnamed")} (${face.count})</option>`)
@@ -455,6 +459,7 @@ function detailRow(label, value) {
 
 function renderDetail(photo) {
   document.body.classList.toggle("has-photo", Boolean(photo));
+  els.remove.classList.toggle("hidden", !photo);
   if (!photo) {
     els.detail.innerHTML = `<p class="muted">Select a photo to see what is in it and open the file.</p>`;
     return;
@@ -469,6 +474,7 @@ function renderDetail(photo) {
           <span class="named-face">
             <img src="/api/faces/${face.id}/thumb" alt="" />
             <span>${escapeHtml(face.label || "Unnamed")}</span>
+            <button type="button" class="btn ghost danger face-remove" data-face="${face.id}">Remove</button>
           </span>`
         )
         .join("")}</div>`
@@ -502,6 +508,51 @@ function renderDetail(photo) {
 function openPhoto(id) {
   api(`/api/photos/${id}/open`, { method: "POST" }).catch((err) => alert(err.message));
 }
+
+function removeFace(id) {
+  const ok = confirm("Remove this face from the index? It will be cleared from every photo. The photos stay.");
+  if (!ok) return;
+  api(`/api/faces/${id}`, { method: "DELETE" })
+    .then(() => {
+      if (state.faceId === id) state.faceId = null;
+      return loadFaces();
+    })
+    .then(() => search(true))
+    .then(() => (state.selectedId ? api(`/api/photos/${state.selectedId}`) : null))
+    .then((photo) => {
+      if (photo && state.selectedId === photo.id) renderDetail(photo);
+    })
+    .catch((err) => alert(err.message));
+}
+
+document.getElementById("remove-face-btn").addEventListener("click", () => {
+  if (state.faceId) removeFace(state.faceId);
+});
+els.detail.addEventListener("click", (event) => {
+  const button = event.target.closest(".face-remove");
+  if (!button) return;
+  removeFace(Number(button.dataset.face));
+});
+els.remove.addEventListener("click", () => {
+  const id = state.selectedId;
+  if (!id) return;
+  const ok = confirm("Remove this photo from the index? The file stays in the folder. Faces, objects, and location saved for it will be deleted.");
+  if (!ok) return;
+  els.remove.disabled = true;
+  els.remove.textContent = "Removing…";
+  api(`/api/photos/${id}`, { method: "DELETE" })
+    .then(() => {
+      state.selectedId = null;
+      renderDetail(null);
+      return loadFaces();
+    })
+    .then(() => search(true))
+    .catch((err) => alert(err.message))
+    .finally(() => {
+      els.remove.disabled = false;
+      els.remove.textContent = "Remove from index";
+    });
+});
 
 let lastPhotoClick = { id: 0, time: 0 };
 

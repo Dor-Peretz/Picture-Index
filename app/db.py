@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS faces (
 CREATE INDEX IF NOT EXISTS idx_faces_photo ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
 
+CREATE TABLE IF NOT EXISTS excluded (
+    path TEXT PRIMARY KEY
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
     filename,
     folder,
@@ -103,17 +107,31 @@ def list_folders(conn: sqlite3.Connection) -> list[str]:
     return [row["folder"] for row in rows]
 
 
-def delete_photo(conn: sqlite3.Connection, photo_id: int) -> None:
+def delete_photo(conn: sqlite3.Connection, photo_id: int) -> list[int]:
     clusters = [
         int(row["cluster_id"])
         for row in conn.execute("SELECT DISTINCT cluster_id FROM faces WHERE photo_id = ?", (photo_id,))
     ]
     conn.execute("DELETE FROM photos_fts WHERE rowid = ?", (photo_id,))
     conn.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
+    removed: list[int] = []
     for cluster_id in clusters:
         left = conn.execute("SELECT COUNT(*) AS n FROM faces WHERE cluster_id = ?", (cluster_id,)).fetchone()["n"]
         if int(left) == 0:
             conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+            removed.append(cluster_id)
+        else:
+            conn.execute("UPDATE face_clusters SET count = ? WHERE id = ?", (int(left), cluster_id))
+    return removed
+
+
+def exclude_path(conn: sqlite3.Connection, path: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO excluded(path) VALUES (?)", (path,))
+
+
+def is_excluded(conn: sqlite3.Connection, path: str) -> bool:
+    row = conn.execute("SELECT 1 FROM excluded WHERE path = ?", (path,)).fetchone()
+    return row is not None
 
 
 def clear_faces(conn: sqlite3.Connection, photo_id: int) -> None:
@@ -146,6 +164,14 @@ def faces_for_photo(conn: sqlite3.Connection, photo_id: int) -> list[dict[str, A
         (photo_id,),
     ).fetchall()
     return [{"id": int(row["id"]), "label": row["label"] or ""} for row in rows]
+
+
+def delete_face_cluster(conn: sqlite3.Connection, cluster_id: int) -> bool:
+    row = conn.execute("SELECT id FROM face_clusters WHERE id = ?", (cluster_id,)).fetchone()
+    if row is None:
+        return False
+    conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+    return True
 
 
 def rename_face(conn: sqlite3.Connection, cluster_id: int, label: str) -> None:
