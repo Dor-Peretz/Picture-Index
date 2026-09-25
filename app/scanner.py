@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import threading
 import time
 import uuid
+from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,34 @@ def _wait_if_paused(job_id: str) -> None:
         time.sleep(0.25)
 
 
+def pin_offline_folders(root: Path) -> int:
+    """Ask Dropbox to download cloud-only photo folders that currently look empty."""
+    kernel32 = ctypes.windll.kernel32
+    get_attr = kernel32.GetFileAttributesW
+    get_attr.argtypes = [wintypes.LPCWSTR]
+    get_attr.restype = wintypes.DWORD
+    set_attr = kernel32.SetFileAttributesW
+    set_attr.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+    set_attr.restype = wintypes.BOOL
+    pinned = 0x00080000
+    unpinned = 0x00100000
+    count = 0
+    for path in root.rglob("*"):
+        try:
+            if not path.is_dir() or path.name.startswith("."):
+                continue
+            if any(path.iterdir()):
+                continue
+        except OSError:
+            continue
+        current = get_attr(str(path))
+        if current == 0xFFFFFFFF or current & pinned:
+            continue
+        if set_attr(str(path), (current | pinned) & ~unpinned):
+            count += 1
+    return count
+
+
 def walk_images(root: Path, recursive: bool) -> list[Path]:
     iterator = root.rglob("*") if recursive else root.glob("*")
     found: list[Path] = []
@@ -76,7 +106,8 @@ def _unchanged(existing: Any, size: int, mtime: float) -> bool:
 def _index_file(conn: Any, path: Path, *, force: bool) -> str:
     stat = path.stat()
     existing = db.find_by_path(conn, str(path))
-    if not force and _unchanged(existing, stat.st_size, stat.st_mtime):
+    unchanged = not force and _unchanged(existing, stat.st_size, stat.st_mtime)
+    if unchanged and int(existing["faces_done"] or 0):
         return "skipped"
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     record = {
@@ -91,24 +122,35 @@ def _index_file(conn: Any, path: Path, *, force: bool) -> str:
         "error": None,
         "indexed_at": now,
     }
-    photo_id = existing["id"] if existing else None
+    photo_id = int(existing["id"]) if existing else None
     try:
-        placeholder_id = photo_id
-        if placeholder_id is None:
+        if unchanged:
+            thumb = thumb_dir() / f"{photo_id}.jpg"
+        else:
+            if photo_id is None:
+                photo_id = db.upsert_photo(conn, record)
+                conn.commit()
+            else:
+                db.clear_faces(conn, photo_id)
+            thumb = thumb_dir() / f"{photo_id}.jpg"
+            meta = read_image(path, thumb)
+            record["width"] = meta["width"]
+            record["height"] = meta["height"]
+            record["taken_at"] = meta["taken_at"]
             record["error"] = None
-            placeholder_id = db.upsert_photo(conn, record)
+            photo_id = db.upsert_photo(conn, record)
             conn.commit()
-        thumb = thumb_dir() / f"{placeholder_id}.jpg"
-        meta = read_image(path, thumb)
-        record["width"] = meta["width"]
-        record["height"] = meta["height"]
-        record["taken_at"] = meta["taken_at"]
-        record["error"] = None
+        from app.faces import index_photo_faces
+
+        index_photo_faces(conn, photo_id, thumb)
     except Exception as exc:
-        record["error"] = open_error(exc)
-    db.upsert_photo(conn, record)
-    conn.commit()
-    return "error" if record["error"] else "indexed"
+        if not unchanged:
+            record["error"] = open_error(exc)
+            if photo_id is not None:
+                db.upsert_photo(conn, record)
+                conn.commit()
+        return "error"
+    return "skipped" if unchanged else "indexed"
 
 
 def _prune(conn: Any, root: Path, seen: set[str]) -> int:
@@ -128,6 +170,8 @@ def _prune(conn: Any, root: Path, seen: set[str]) -> int:
 def _run(job_id: str, root: Path, recursive: bool, force: bool) -> None:
     try:
         _update_job(job_id, status="running", stage="Finding photos")
+        offline = pin_offline_folders(root) if recursive else 0
+        _update_job(job_id, offline=offline, stage="Finding photos")
         files = walk_images(root, recursive)
         _update_job(job_id, total=len(files), stage=f"0 / {len(files)}")
         conn = db.get_connection()
@@ -155,7 +199,11 @@ def _run(job_id: str, root: Path, recursive: bool, force: bool) -> None:
                 )
             if not _job_flag(job_id, "cancelled"):
                 removed = _prune(conn, root, seen)
-                _update_job(job_id, removed=removed, status="done", stage="Done", done=len(files))
+                offline = int((get_job(job_id) or {}).get("offline") or 0)
+                stage = "Done"
+                if offline:
+                    stage = f"Done. {offline} Dropbox folders were asked to download. Index again after they finish."
+                _update_job(job_id, removed=removed, status="done", stage=stage, done=len(files))
         finally:
             conn.close()
     except Exception as exc:
@@ -189,6 +237,7 @@ def start_scan(folder: str | None = None, *, recursive: bool | None = None, forc
         "skipped": 0,
         "failed": 0,
         "removed": 0,
+        "offline": 0,
         "errors": [],
         "paused": False,
         "cancelled": False,

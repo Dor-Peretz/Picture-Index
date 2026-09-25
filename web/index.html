@@ -42,11 +42,21 @@
         <div id="empty" class="empty">Choose a folder of photos and index it. Search works on the filename, the folder, and the date the photo was taken.</div>
         <button type="button" class="btn more hidden" id="more-btn">Load more</button>
       </section>
+      <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Resize preview"></div>
       <aside class="side">
         <label class="field">
           <span>Search</span>
           <input id="search" type="search" placeholder="Filename or folder" />
         </label>
+        <div class="field">
+          <span>Faces</span>
+          <div id="faces" class="faces"></div>
+          <div id="face-merge" class="face-merge hidden">
+            <span>Same person as</span>
+            <select id="merge-with"></select>
+            <button type="button" class="btn small" id="merge-btn">Merge</button>
+          </div>
+        </div>
         <label class="field">
           <span>Folder</span>
           <select id="folder-filter"><option value="">All folders</option></select>
@@ -76,6 +86,7 @@
         <input id="picker-path" type="text" spellcheck="false" />
         <div id="picker-list" class="folder-list"></div>
         <div class="dialog-actions">
+          <button type="button" class="btn" id="picker-back">Back</button>
           <button type="button" class="btn" id="picker-up">Up</button>
           <button type="button" class="btn" id="picker-cancel">Cancel</button>
           <button type="button" class="btn primary" id="picker-choose">Use this folder</button>

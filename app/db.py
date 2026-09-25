@@ -29,6 +29,23 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_photos_folder ON photos(folder);
 CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken_at);
 
+CREATE TABLE IF NOT EXISTS face_clusters (
+    id INTEGER PRIMARY KEY,
+    centroid BLOB NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS faces (
+    id INTEGER PRIMARY KEY,
+    photo_id INTEGER NOT NULL,
+    cluster_id INTEGER NOT NULL,
+    FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+    FOREIGN KEY (cluster_id) REFERENCES face_clusters(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_faces_photo ON faces(photo_id);
+CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
     filename,
     folder,
@@ -49,6 +66,12 @@ def init_db() -> None:
     conn = get_connection()
     try:
         conn.executescript(SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(photos)").fetchall()}
+        if "faces_done" not in columns:
+            conn.execute("ALTER TABLE photos ADD COLUMN faces_done INTEGER NOT NULL DEFAULT 0")
+        cluster_columns = {row[1] for row in conn.execute("PRAGMA table_info(face_clusters)").fetchall()}
+        if cluster_columns and "label" not in cluster_columns:
+            conn.execute("ALTER TABLE face_clusters ADD COLUMN label TEXT NOT NULL DEFAULT ''")
         conn.commit()
     finally:
         conn.close()
@@ -73,8 +96,73 @@ def list_folders(conn: sqlite3.Connection) -> list[str]:
 
 
 def delete_photo(conn: sqlite3.Connection, photo_id: int) -> None:
+    clusters = [
+        int(row["cluster_id"])
+        for row in conn.execute("SELECT DISTINCT cluster_id FROM faces WHERE photo_id = ?", (photo_id,))
+    ]
     conn.execute("DELETE FROM photos_fts WHERE rowid = ?", (photo_id,))
     conn.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
+    for cluster_id in clusters:
+        left = conn.execute("SELECT COUNT(*) AS n FROM faces WHERE cluster_id = ?", (cluster_id,)).fetchone()["n"]
+        if int(left) == 0:
+            conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+
+
+def clear_faces(conn: sqlite3.Connection, photo_id: int) -> None:
+    clusters = [
+        int(row["cluster_id"])
+        for row in conn.execute("SELECT DISTINCT cluster_id FROM faces WHERE photo_id = ?", (photo_id,))
+    ]
+    conn.execute("DELETE FROM faces WHERE photo_id = ?", (photo_id,))
+    for cluster_id in clusters:
+        left = conn.execute(
+            "SELECT COUNT(*) AS n FROM faces WHERE cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()["n"]
+        if int(left) == 0:
+            conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
+        else:
+            conn.execute("UPDATE face_clusters SET count = ? WHERE id = ?", (int(left), cluster_id))
+    conn.execute("UPDATE photos SET faces_done = 0 WHERE id = ?", (photo_id,))
+
+
+def faces_for_photo(conn: sqlite3.Connection, photo_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT face_clusters.id, face_clusters.label
+        FROM faces
+        JOIN face_clusters ON face_clusters.id = faces.cluster_id
+        WHERE faces.photo_id = ?
+        ORDER BY face_clusters.label, face_clusters.id
+        """,
+        (photo_id,),
+    ).fetchall()
+    return [{"id": int(row["id"]), "label": row["label"] or ""} for row in rows]
+
+
+def rename_face(conn: sqlite3.Connection, cluster_id: int, label: str) -> None:
+    conn.execute("UPDATE face_clusters SET label = ? WHERE id = ?", (label.strip(), cluster_id))
+
+
+def mark_faces_done(conn: sqlite3.Connection, photo_id: int) -> None:
+    conn.execute("UPDATE photos SET faces_done = 1 WHERE id = ?", (photo_id,))
+
+
+def list_face_clusters(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT face_clusters.id, face_clusters.label, COUNT(DISTINCT faces.photo_id) AS count
+        FROM face_clusters
+        JOIN faces ON faces.cluster_id = face_clusters.id
+        GROUP BY face_clusters.id
+        HAVING count > 0
+        ORDER BY count DESC, face_clusters.id
+        """
+    ).fetchall()
+    return [
+        {"id": int(row["id"]), "label": row["label"] or "", "count": int(row["count"])}
+        for row in rows
+    ]
 
 
 def paths_under(conn: sqlite3.Connection, root: str) -> list[sqlite3.Row]:
@@ -158,6 +246,7 @@ def search_photos(
     folder: str = "",
     taken_from: str = "",
     taken_to: str = "",
+    face: int | None = None,
     limit: int = 80,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -178,6 +267,9 @@ def search_photos(
     if taken_to:
         where.append("photos.taken_at < ?")
         params.append(taken_to + "T99")
+    if face:
+        where.append("photos.id IN (SELECT photo_id FROM faces WHERE cluster_id = ?)")
+        params.append(face)
     sql_where = " AND ".join(where)
     total = conn.execute(
         f"SELECT COUNT(*) AS n FROM photos {join} WHERE {sql_where}",

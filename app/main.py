@@ -11,8 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import db
+from app.faces import merge_clusters
 from app.fs import list_folders
-from app.paths import thumb_dir, web_dir
+from app.images import scan_details
+from app.paths import face_dir, thumb_dir, web_dir
 from app.scanner import cancel_job, get_job, pause_job, resume_job, start_scan
 from app.settings import load_settings, save_settings
 
@@ -31,6 +33,15 @@ class ScanRequest(BaseModel):
 class SettingsUpdate(BaseModel):
     folder: str | None = None
     scan_subfolders: bool | None = None
+
+
+class FaceRename(BaseModel):
+    label: str = ""
+
+
+class FaceMerge(BaseModel):
+    keep_id: int
+    drop_id: int
 
 
 def _open_path(path: str) -> None:
@@ -122,6 +133,7 @@ def photos(
     folder: str = "",
     taken_from: str = "",
     taken_to: str = "",
+    face: int | None = None,
     limit: int = Query(default=80, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -133,6 +145,7 @@ def photos(
             folder=folder,
             taken_from=taken_from,
             taken_to=taken_to,
+            face=face,
             limit=limit,
             offset=offset,
         )
@@ -145,11 +158,59 @@ def photo(photo_id: int) -> dict:
     conn = db.get_connection()
     try:
         row = db.get_photo(conn, photo_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        item = dict(row)
+        item["faces"] = db.faces_for_photo(conn, photo_id)
     finally:
         conn.close()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    return dict(row)
+    try:
+        item["details"] = scan_details(Path(item["path"]))
+    except Exception as exc:
+        item["details"] = []
+        item["detail_error"] = str(exc) or exc.__class__.__name__
+    return item
+
+
+@app.get("/api/faces")
+def faces() -> dict:
+    conn = db.get_connection()
+    try:
+        return {"faces": db.list_face_clusters(conn)}
+    finally:
+        conn.close()
+
+
+@app.put("/api/faces/{cluster_id}")
+def rename_face(cluster_id: int, body: FaceRename) -> dict:
+    conn = db.get_connection()
+    try:
+        db.rename_face(conn, cluster_id, body.label)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": cluster_id, "label": body.label.strip()}
+
+
+@app.post("/api/faces/merge")
+def merge_faces(body: FaceMerge) -> dict:
+    conn = db.get_connection()
+    try:
+        try:
+            keep_id = merge_clusters(conn, body.keep_id, body.drop_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return {"id": keep_id}
+
+
+@app.get("/api/faces/{cluster_id}/thumb")
+def face_thumb(cluster_id: int) -> FileResponse:
+    path = face_dir() / f"{cluster_id}.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Face not found")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @app.get("/api/photos/{photo_id}/thumb")

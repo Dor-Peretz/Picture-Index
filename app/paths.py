@@ -34,3 +34,15 @@ def thumb_dir() -> Path:
     path = user_data_dir() / "thumbs"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def face_dir() -> Path:
+    path = user_data_dir() / "faces"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def model_dir() -> Path:
+    path = user_data_dir() / "models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
